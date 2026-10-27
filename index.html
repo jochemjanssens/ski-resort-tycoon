@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ski Resort Tycoon</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <header id="topbar" class="hud">
+    <div class="brand" title="Ski Resort Tycoon">
+      <svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true"><path d="M2 29 L13 10 L19 19 L23 13 L32 29 Z" fill="#f5f8fc"/><path d="M13 10 L16.5 16 L14 15 L11.5 17 Z" fill="#121c2b"/><path d="M9 29 C13 24 17 23 19 19" stroke="#ff8a3d" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg>
+    </div>
+    <div class="stats">
+      <div class="stat" id="st-money"><span class="lbl">Cash</span><span class="val"></span></div>
+      <div class="stat" id="st-date"><span class="lbl"></span><span class="val"></span></div>
+      <div class="stat" id="st-weather"><span class="lbl"></span><span class="val"></span></div>
+      <div class="stat" id="st-guests"><span class="lbl">On mountain · today</span><span class="val"></span></div>
+      <div class="stat" id="st-rating"><span class="lbl">Rating</span><span class="val"></span></div>
+    </div>
+    <div class="speed" id="speed" role="group" aria-label="Game speed">
+      <button data-speed="0" title="Pause (Space)" aria-label="Pause"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="5" y="4" width="5" height="16" rx="1"/><rect x="14" y="4" width="5" height="16" rx="1"/></svg></button>
+      <button data-speed="1" title="Normal speed (1)">1×</button>
+      <button data-speed="2" title="Fast (2)">2×</button>
+      <button data-speed="4" title="Faster (3)">4×</button>
+      <button data-speed="8" title="Fastest (4)">8×</button>
+    </div>
+    <nav class="windows" aria-label="Panels">
+      <button data-panel="finance" title="Finances" aria-label="Finances"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></button>
+      <button data-panel="guests" title="Guests and rating" aria-label="Guests and rating"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.5a3 3 0 0 1 0 5.5M18 14.3c2 .8 3 2.9 3 5.7"/></svg></button>
+      <button data-panel="lifts" title="Lifts" aria-label="Lifts"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5l18 4"/><path d="M12 7v5"/><rect x="8" y="12" width="8" height="7" rx="1.5"/></svg></button>
+      <button data-panel="staff" title="Staff" aria-label="Staff"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14a8 8 0 0 1 16 0"/><path d="M2 14h20v2H2z"/><path d="M12 6V4"/></svg></button>
+      <button data-panel="marketing" title="Marketing" aria-label="Marketing"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg></button>
+      <button data-panel="research" title="Research" aria-label="Research"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3"/><path d="M7 15h10"/></svg></button>
+      <button data-panel="prices" title="Prices" aria-label="Prices"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4z"/><path d="M14 6v12" stroke-dasharray="2 2"/></svg></button>
+      <button data-panel="goals" title="Goals and advisor" aria-label="Goals and advisor"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg></button>
+      <button data-panel="menu" title="Game menu" aria-label="Game menu"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+    </nav>
+  </header>
+
+  <button id="goalchip" class="hud hidden" data-action="open-goals" aria-label="Current goal — open goals">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
+    <span id="goal-text"></span><span class="prog hidden" id="goal-prog"></span>
+  </button>
+
+  <nav id="toolbar" class="hud" aria-label="Tools">
+    <button data-tool="inspect" title="Inspect / select (Q)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3l14 8-6 1.5L10 19z"/></svg><small>Inspect</small></button>
+    <button data-tool="piste" title="Paint pistes (P)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3c4 3-4 6 0 9s-4 6 0 9"/><path d="M15 3c4 3-4 6 0 9s-4 6 0 9"/></svg><small>Piste</small></button>
+    <button data-tool="route" title="Auto-route a piste (R)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="19" r="2"/><path d="M8 5h6a3 3 0 0 1 0 6h-4a3 3 0 0 0 0 6h6"/></svg><small>Route</small></button>
+    <button data-tool="unpiste" title="Remove pistes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20H9l-5-5a2 2 0 0 1 0-2.8l8.2-8.2a2 2 0 0 1 2.8 0l5 5a2 2 0 0 1 0 2.8L13 19"/><path d="M8 9l7 7"/></svg><small>Unpiste</small></button>
+    <button data-tool="lifts" title="Build lifts (L)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5l18 4"/><path d="M12 7v5"/><rect x="8" y="12" width="8" height="7" rx="1.5"/></svg><small>Lifts</small></button>
+    <button data-tool="buildings" title="Build facilities (B)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></svg><small>Build</small></button>
+    <button data-tool="clear" title="Clear trees"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4l6 6-3 3-6-6z"/><path d="M11 7L3 15l3 3 8-8"/><path d="M6 18l-2 2"/></svg><small>Clear</small></button>
+    <button data-tool="plant" title="Plant trees"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l6 9h-4l4 6H6l4-6H6z"/><path d="M12 18v3"/></svg><small>Plant</small></button>
+    <button data-tool="demolish" title="Demolish lifts and buildings (X)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg><small>Demolish</small></button>
+    <button data-toggle="views" title="Map views (V, G for slopes)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/></svg><small>Views</small></button>
+    <button data-toggle="undo" title="Undo last build (Ctrl/⌘+Z)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/></svg><small>Undo</small></button>
+  </nav>
+  <div id="submenu" class="hud hidden"></div>
+
+  <section id="panel" class="hud hidden"></section>
+  <section id="info" class="hud hidden"></section>
+  <div id="tooltip" class="hidden"></div>
+  <div id="minimap-wrap" class="hud">
+    <button id="minimap-toggle" class="ibtn" aria-label="Show or hide the mini-map"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg></button>
+    <canvas id="minimap"></canvas>
+  </div>
+  <div id="advisor" class="hud hidden" role="status"></div>
+  <div id="tutorial" class="hud hidden"></div>
+  <div id="toasts"></div>
+  <div id="modal" class="hidden"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/terrain.js"></script>
+  <script src="js/sim.js"></script>
+  <script src="js/render.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
