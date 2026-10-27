@@ -61,7 +61,11 @@ function generateTerrain(seed, opts) {
       const ridge = 0.55 + 0.45 * fbm(x * 0.045 + 50, 7.3, 3);
       const bumps = (fbm(x * 0.09, y * 0.09, 4) - 0.5);
       const shape = Math.pow(t, 1.7);
-      height[i] = BASE_ALT + opts.vert * ridge * shape + bumps * opts.bumps * Math.min(1, t * 2.5);
+      // Gullies and spurs running down the fall line: ridged noise stretched north–south.
+      const rn = fbm(x * 0.05 + 300, y * 0.02 + 300, 2);
+      const gully = (1 - Math.abs(rn * 2 - 1)) - 0.55;
+      height[i] = BASE_ALT + opts.vert * ridge * shape + bumps * opts.bumps * Math.min(1, t * 2.5)
+        + gully * opts.vert * 0.1 * Math.min(1, t * 1.6);
     }
   }
   // Blend the first mountain rows into the flat village.

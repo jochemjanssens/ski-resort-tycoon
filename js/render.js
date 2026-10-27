@@ -23,9 +23,7 @@ function heatColor(t, a) {
 }
 
 function buildDynOverlay() {
-  if (!R.dyn) { R.dyn = document.createElement('canvas'); R.dyn.width = MAP_W * TILE; R.dyn.height = MAP_H * TILE; }
-  const ctx = R.dyn.getContext('2d');
-  ctx.clearRect(0, 0, R.dyn.width, R.dyn.height);
+  const ctx = flatCanvas();
   let maxT = 1;
   if (R.view === 'traffic') for (let i = 0; i < T.traffic.length; i++) maxT = Math.max(maxT, T.traffic[i]);
   for (let i = 0; i < MAP_W * MAP_H; i++) {
@@ -44,6 +42,7 @@ function buildDynOverlay() {
       ctx.fillRect(x, y, TILE, TILE);
     }
   }
+  R.dyn = warp(R.flat);
   R.dynAt = performance.now();
 }
 
@@ -63,25 +62,102 @@ function resizeCanvas() {
   clampCam();
 }
 
+// ---------- 2.5D projection ----------
+// The map is drawn tilted: depth is foreshortened by KY and every point is lifted by its altitude.
+const KY = 0.72;   // north–south foreshortening
+const EZ = 0.3;    // screen px per metre of altitude
+
+function mapW() { return R.tp ? R.tp.PW : MAP_W * TILE; }
+function mapH() { return R.tp ? R.tp.PH : MAP_H * TILE; }
+
+// Altitude in screen px at a world point (px), bilinear over the vertex heights.
+function elevAt(wx, wy) {
+  const tp = R.tp;
+  if (!tp) return 0;
+  const fx = clamp(wx / TILE, 0, MAP_W), fy = clamp(wy / TILE, 0, MAP_H);
+  const ix = Math.min(Math.floor(fx), MAP_W - 1), iy = Math.min(Math.floor(fy), MAP_H - 1), rx = fx - ix, ry = fy - iy;
+  const a = iy * tp.VW + ix, v = tp.vh;
+  const h = (v[a] * (1 - rx) + v[a + 1] * rx) * (1 - ry) + (v[a + tp.VW] * (1 - rx) + v[a + tp.VW + 1] * rx) * ry;
+  return (h - BASE_ALT) * EZ;
+}
+function projY(wx, wy) { return R.tp ? wy * KY - elevAt(wx, wy) + R.tp.off : wy; }
+// Project a point given in tile units.
+function P(x, y) { return [x * TILE, projY(x * TILE, y * TILE)]; }
+
+// Screen-space (projected) y back to a world y in column wx.
+function unprojectY(wx, Y) {
+  if (!R.tp) return Y;
+  let lo = -TILE * 4, hi = MAP_H * TILE + TILE * 4;
+  for (let k = 0; k < 24; k++) {
+    const mid = (lo + hi) / 2;
+    if (projY(wx, mid) < Y) lo = mid; else hi = mid;
+  }
+  return (lo + hi) / 2;
+}
+
+// Draw something authored in flat world px around (wx, wy), standing at that spot on the slope.
+function withAnchor(ctx, wx, wy, fn) {
+  ctx.save();
+  ctx.translate(wx, projY(wx, wy));
+  ctx.scale(1, KY);
+  ctx.translate(-wx, -wy);
+  fn();
+  ctx.restore();
+}
+
+// Outline of tile i on the slope (four projected corners).
+function tilePath(ctx, i) {
+  const x = tx(i), y = ty(i);
+  const a = P(x, y), b = P(x + 1, y), c = P(x + 1, y + 1), d = P(x, y + 1);
+  ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.closePath();
+}
+
+// Re-draw a flat world-sized canvas onto the tilted, lifted map.
+function warp(src) {
+  const { w, h, PW, PH, map } = R.tp;
+  const sd = new Uint32Array(src.getContext('2d').getImageData(0, 0, w, h).data.buffer);
+  const c = document.createElement('canvas');
+  c.width = PW; c.height = PH;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(PW, PH);
+  const dd = new Uint32Array(img.data.buffer);
+  for (let i = 0; i < dd.length; i++) { const m = map[i]; if (m >= 0) dd[i] = sd[m]; }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+function flatCanvas() {
+  if (!R.flat) { R.flat = document.createElement('canvas'); R.flat.width = MAP_W * TILE; R.flat.height = MAP_H * TILE; }
+  const ctx = R.flat.getContext('2d');
+  ctx.clearRect(0, 0, R.flat.width, R.flat.height);
+  return ctx;
+}
+
 function clampCam() {
   const vw = window.innerWidth / R.cam.zoom, vh = window.innerHeight / R.cam.zoom;
-  const mw = MAP_W * TILE, mh = MAP_H * TILE, pad = 200;
+  const mw = mapW(), mh = mapH(), pad = 200;
   R.cam.x = vw > mw ? (mw - vw) / 2 : clamp(R.cam.x, -pad, mw - vw + pad);
   R.cam.y = vh > mh ? (mh - vh) / 2 : clamp(R.cam.y, -pad, mh - vh + pad);
 }
 
-function centerCamOn(wx, wy) {
-  R.cam.x = wx - window.innerWidth / R.cam.zoom / 2;
-  R.cam.y = wy - window.innerHeight / R.cam.zoom / 2;
+// Centre on a world point (px).
+function centerCamOn(wx, wy) { centerCamOnProj(wx, projY(wx, wy)); }
+function centerCamOnProj(X, Y) {
+  R.cam.x = X - window.innerWidth / R.cam.zoom / 2;
+  R.cam.y = Y - window.innerHeight / R.cam.zoom / 2;
   clampCam();
 }
 
-function screenToWorld(sx, sy) {
+function screenToProj(sx, sy) {
   return { x: sx / R.cam.zoom + R.cam.x, y: sy / R.cam.zoom + R.cam.y };
+}
+function screenToWorld(sx, sy) {
+  const p = screenToProj(sx, sy);
+  return { x: p.x, y: unprojectY(p.x, p.y) };
 }
 
 function zoomAt(sx, sy, factor) {
-  const before = screenToWorld(sx, sy);
+  const before = screenToProj(sx, sy);
   R.cam.zoom = clamp(R.cam.zoom * factor, 0.5, 4);
   R.cam.x = before.x - sx / R.cam.zoom;
   R.cam.y = before.y - sy / R.cam.zoom;
@@ -148,7 +224,24 @@ function prepTerrain() {
       contour[k] = Math.floor(hp[k] / 250) !== Math.floor(r / 250) || Math.floor(hp[k] / 250) !== Math.floor(d / 250) ? 2 : 1;
     }
   }
-  R.tp = { w, h, VW, VH, vh, vAt, ao, hp, contour };
+  // Projection: for every column, walk south and paint each source pixel over the rows it covers
+  // (later rows are nearer the viewer, so they win). The result maps each screen pixel to a map pixel.
+  let maxE = 0;
+  for (let k = 0; k < hp.length; k++) maxE = Math.max(maxE, (hp[k] - BASE_ALT) * EZ);
+  const off = Math.ceil(maxE) + 12;
+  const PW = w, PH = Math.ceil((h - 1) * KY + off) + 1;
+  const map = new Int32Array(PW * PH).fill(-1);
+  for (let px = 0; px < w; px++) {
+    let prev = -1;
+    for (let py = 0; py < h; py++) {
+      const k = py * w + px;
+      const yd = Math.round(py * KY - (hp[k] - BASE_ALT) * EZ + off);
+      const a = prev < 0 ? yd : Math.min(prev, yd), b = prev < 0 ? yd : Math.max(prev, yd);
+      for (let r = Math.max(0, a); r <= b && r < PH; r++) map[r * PW + px] = k;
+      prev = yd;
+    }
+  }
+  R.tp = { w, h, VW, VH, vh, vAt, ao, hp, contour, off, PW, PH, map };
 }
 
 function buildSunKey(m) {
@@ -203,6 +296,9 @@ function buildSunKey(m) {
         r += n; g += n; b += n;
         const cl = contour[k];
         if (cl) { r -= cl === 2 ? 38 : 18; g -= cl === 2 ? 30 : 14; b -= cl === 2 ? 16 : 7; }
+        // atmospheric haze: the far (upper) mountain fades towards the sky
+        const hz = Math.pow(1 - py / h, 1.6) * 0.32;
+        r += (200 - r) * hz; g += (214 - g) * hz; b += (232 - b) * hz;
       }
       d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
     }
@@ -218,7 +314,7 @@ function buildSunKey(m) {
   for (let x = 0; x < w; x += 12) ctx.fillRect(x, (MAP_H - 0.5) * TILE - 0.5, 6, 1);
   ctx.fillStyle = '#e8d34a';
   for (let y = (MAP_H - 2) * TILE + 2; y < MAP_H * TILE; y += 8) ctx.fillRect(ENTRANCE.x * TILE + TILE / 2 - 1, y, 2, 4);
-  return c;
+  return warp(c);
 }
 
 // Which two sun keys to blend for minute m, and how much of the second.
@@ -253,9 +349,7 @@ function buildTerrainCanvas() {
 }
 
 function buildSlopeCanvas() {
-  const c = document.createElement('canvas');
-  c.width = MAP_W * TILE; c.height = MAP_H * TILE;
-  const ctx = c.getContext('2d');
+  const ctx = flatCanvas();
   for (let i = 0; i < MAP_W * MAP_H; i++) {
     if (T.village[i]) continue;
     const d = T.diff[i];
@@ -264,7 +358,7 @@ function buildSlopeCanvas() {
     ctx.fillRect(tx(i) * TILE, ty(i) * TILE, TILE, TILE);
   }
   ctx.globalAlpha = 1;
-  R.slope = c;
+  R.slope = warp(R.flat);
 }
 
 function pineShadow(ctx, x, y, s, sv) {
@@ -283,9 +377,7 @@ function drawPine(ctx, x, y, s, dark) {
 }
 
 function buildOverlay() {
-  if (!R.overlay) { R.overlay = document.createElement('canvas'); R.overlay.width = MAP_W * TILE; R.overlay.height = MAP_H * TILE; }
-  const ctx = R.overlay.getContext('2d');
-  ctx.clearRect(0, 0, R.overlay.width, R.overlay.height);
+  let ctx = flatCanvas();
   // Pistes
   for (let i = 0; i < MAP_W * MAP_H; i++) {
     if (!T.piste[i]) continue;
@@ -327,17 +419,21 @@ function buildOverlay() {
       ctx.beginPath(); ctx.moveTo(cx - r * 0.3, cy - r); ctx.lineTo(cx + r * 0.6, cy - r * 0.5); ctx.lineTo(cx + r * 0.1, cy + r * 0.2); ctx.closePath(); ctx.fill();
     }
   }
-  // Trees: all shadows first (towards the current sun), then the trees, row by row for overlap
-  const sv = shadowVec(1.1, sunAt(S.minute));
+  R.overlay = warp(R.flat);
+  ctx = R.overlay.getContext('2d');
+  // Trees stand upright on the slope: all shadows first (towards the current sun), then the trees, back to front
+  const sv0 = shadowVec(1.1, sunAt(S.minute)), sv = { x: sv0.x, y: sv0.y * KY };
   const pines = [];
   for (let y = 0; y < MAP_H; y++) for (let x = 0; x < MAP_W; x++) {
     const i = idx(x, y);
     if (!T.tree[i]) continue;
     const n = 2 + Math.floor(hash(i, 1) * 2);
     for (let k = 0; k < n; k++) {
-      pines.push([x * TILE + 3 + hash(i, k * 3) * 10, y * TILE + 6 + hash(i, k * 3 + 1) * 9, 4.5 + hash(i, k * 3 + 2) * 2.5, hash(i, k + 20) > 0.5]);
+      const wx = x * TILE + 3 + hash(i, k * 3) * 10, wy = y * TILE + 6 + hash(i, k * 3 + 1) * 9;
+      pines.push([wx, projY(wx, wy), 5 + hash(i, k * 3 + 2) * 3, hash(i, k + 20) > 0.5]);
     }
   }
+  pines.sort((a, b) => a[1] - b[1]);
   ctx.fillStyle = 'rgba(38,58,100,0.24)';
   ctx.beginPath();
   for (const [x, y, sz] of pines) pineShadow(ctx, x, y, sz, sv);
@@ -382,56 +478,68 @@ function drawLiftLine(ctx, l, ghost, ok) {
   const L = LIFT_TYPES[l.type];
   const g = liftGeom(l);
   const off = l.type === 'rope' ? 0.12 : 0.2;
-  const T_ = TILE, H = CABLE_H[l.type];
-  const sun = sunAt(S.minute), sv = shadowVec(H, sun);
+  const T_ = TILE, H = CABLE_H[l.type] / KY;
+  const sun = sunAt(S.minute), sv = shadowVec(CABLE_H[l.type], sun);
   const ghostCol = ok ? '#2f9e44' : '#e03131';
+  // ground point along the line (s tiles from the bottom, side offset o tiles), projected
+  const at = (s, o) => P(g.x0 + g.ux * s + g.px * o, g.y0 + g.uy * s + g.py * o);
+  const shadowAt = (s, o) => P(g.x0 + g.ux * s + g.px * o + sv.x / T_, g.y0 + g.uy * s + g.py * o + sv.y / T_);
   ctx.save();
   if (ghost) ctx.globalAlpha = 0.75;
   const step = l.type === 'rope' ? 3 : 4;
   const towers = [];
-  for (let s = step; s < g.len - 1; s += step) towers.push([(g.x0 + g.ux * s) * T_, (g.y0 + g.uy * s) * T_]);
+  for (let s = step; s < g.len - 1; s += step) towers.push(s);
   // ground shadows of cable and towers
   ctx.strokeStyle = 'rgba(30,45,85,0.2)'; ctx.lineWidth = 1.6;
   ctx.beginPath();
-  ctx.moveTo(g.x0 * T_ + sv.x, g.y0 * T_ + sv.y); ctx.lineTo(g.x1 * T_ + sv.x, g.y1 * T_ + sv.y);
-  for (const [x, y] of towers) { ctx.moveTo(x, y); ctx.lineTo(x + sv.x, y + sv.y); }
+  for (let s = 0; s <= g.len; s += 0.5) { const q = shadowAt(Math.min(s, g.len), 0); if (s === 0) ctx.moveTo(q[0], q[1]); else ctx.lineTo(q[0], q[1]); }
+  for (const s of towers) { const a = at(s, 0), q = shadowAt(s, 0); ctx.moveTo(a[0], a[1]); ctx.lineTo(q[0], q[1]); }
   ctx.stroke();
   // stations (drawn before the cable so it runs over the roofs)
   for (const [x, y] of [[l.bx, l.by], [l.tx, l.ty]]) {
     const col = ghost ? ghostCol : L.color;
-    drawBox(ctx, x * T_ + 1, y * T_ + 2, T_ - 2, T_ - 3, 5, col, shade(col, -0.32), ghost ? null : sun);
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.fillRect(x * T_ + 3, y * T_ - 1, T_ - 6, 2.5);
+    withAnchor(ctx, (x + 0.5) * T_, (y + 0.5) * T_, () => {
+      drawBox(ctx, x * T_ + 1, y * T_ + 2, T_ - 2, T_ - 3, 6, col, shade(col, -0.32), ghost ? null : sun);
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillRect(x * T_ + 3, y * T_ - 2, T_ - 6, 3);
+    });
   }
   // towers
   ctx.strokeStyle = '#3b4252'; ctx.lineWidth = 1.4;
   ctx.beginPath();
-  for (const [x, y] of towers) { ctx.moveTo(x, y); ctx.lineTo(x, y - H); }
+  for (const s of towers) { const a = at(s, 0); ctx.moveTo(a[0], a[1]); ctx.lineTo(a[0], a[1] - H); }
   ctx.stroke();
   ctx.fillStyle = '#3b4252';
-  for (const [x, y] of towers) ctx.fillRect(x - (g.px * off * T_) - 1.2 - Math.abs(g.ux) * 1.5, y - H - 1, 2.4 + Math.abs(g.ux) * 3, 1.6);
-  // cables, raised by H
+  for (const s of towers) { const a = at(s, 0); ctx.fillRect(a[0] - 1.6 - Math.abs(g.ux) * 2, a[1] - H - 1, 3.2 + Math.abs(g.ux) * 4, 1.6); }
+  // cables follow the terrain at height H, sagging slightly between towers
   ctx.strokeStyle = ghost ? ghostCol : '#2d2d33'; ctx.lineWidth = 1;
   for (const sgn of [1, -1]) {
     ctx.beginPath();
-    ctx.moveTo((g.x0 + g.px * off * sgn) * T_, (g.y0 + g.py * off * sgn) * T_ - H);
-    ctx.lineTo((g.x1 + g.px * off * sgn) * T_, (g.y1 + g.py * off * sgn) * T_ - H);
+    const stops = [0, ...towers, g.len];
+    for (let k = 0; k < stops.length - 1; k++) {
+      const s0 = stops[k], s1 = stops[k + 1];
+      for (let t = 0; t <= 1.0001; t += 0.25) {
+        const s = s0 + (s1 - s0) * t, q = at(s, off * sgn);
+        const y = q[1] - H + Math.sin(Math.PI * t) * 1.2;
+        if (k === 0 && t === 0) ctx.moveTo(q[0], y); else ctx.lineTo(q[0], y);
+      }
+    }
     ctx.stroke();
   }
   if (!ghost && l.type !== 'rope' && l.type !== 'tbar') {
     // carriers hang under the cable and cast small shadows
     const spacing = l.type === 'gondola' ? 2.2 : 1.4;
     const phase = ((S.minute * L.speed) % spacing + spacing) % spacing;
-    const csv = shadowVec(H - 3, sun);
+    const csv = shadowVec(CABLE_H[l.type] - 3, sun);
     for (const sgn of [1, -1]) {
       for (let s = (sgn > 0 ? phase : spacing - phase); s < g.len; s += spacing) {
-        const x = (g.x0 + g.ux * s + g.px * off * sgn) * T_, y = (g.y0 + g.uy * s + g.py * off * sgn) * T_;
+        const [x, y] = at(s, off * sgn);
         const cw = l.type === 'gondola' ? 5 : l.type === 'chair4' ? 5 : 3;
-        ctx.fillStyle = 'rgba(30,45,85,0.18)'; ctx.fillRect(x - cw / 2 + csv.x, y + csv.y - 1, cw, 2.5);
+        ctx.fillStyle = 'rgba(30,45,85,0.18)'; ctx.fillRect(x - cw / 2 + csv.x, y + csv.y * KY - 1, cw, 2);
         ctx.strokeStyle = '#555'; ctx.lineWidth = 0.6;
-        ctx.beginPath(); ctx.moveTo(x, y - H); ctx.lineTo(x, y - H + 3); ctx.stroke();
-        if (l.type === 'gondola') { ctx.fillStyle = L.color; ctx.fillRect(x - 2.5, y - H + 2.5, 5, 4.5); ctx.fillStyle = '#bfe3ff'; ctx.fillRect(x - 1.7, y - H + 3.2, 3.4, 1.6); }
-        else { ctx.fillStyle = '#333'; ctx.fillRect(x - cw / 2, y - H + 3, cw, 1.8); }
+        ctx.beginPath(); ctx.moveTo(x, y - H); ctx.lineTo(x, y - H + 3.5); ctx.stroke();
+        if (l.type === 'gondola') { ctx.fillStyle = L.color; ctx.fillRect(x - 2.5, y - H + 3, 5, 5); ctx.fillStyle = '#bfe3ff'; ctx.fillRect(x - 1.7, y - H + 3.8, 3.4, 1.8); }
+        else { ctx.fillStyle = '#333'; ctx.fillRect(x - cw / 2, y - H + 3.5, cw, 1.8); }
       }
     }
   }
@@ -446,6 +554,11 @@ function shade(hex, amt) {
 }
 
 function drawBuilding(ctx, b, ghost, ok) {
+  const s = BUILDING_TYPES[b.type].size * TILE;
+  withAnchor(ctx, b.x * TILE + s / 2, b.y * TILE + s / 2, () => drawBuildingFlat(ctx, b, ghost, ok));
+}
+
+function drawBuildingFlat(ctx, b, ghost, ok) {
   const B = BUILDING_TYPES[b.type];
   const x = b.x * TILE, y = b.y * TILE, s = B.size * TILE;
   ctx.save();
@@ -484,7 +597,7 @@ function drawBuilding(ctx, b, ghost, ok) {
   }
   let hgt = 0;
   if (b.type !== 'parking') {
-    hgt = b.type === 'cannon' ? 4 : B.size === 2 ? 9 : 6;
+    hgt = (b.type === 'cannon' ? 5 : B.size === 2 ? 11 : 8);
     const col = ghost ? (ok ? '#2f9e44' : '#e03131') : B.color;
     drawBox(ctx, x + 1, y + 1, s - 2, s - 2, hgt, col, shade(col, -0.35), ghost ? null : sunAt(S.minute));
     // snowy roof ridge
@@ -538,12 +651,14 @@ function render() {
   const now = performance.now(), rdt = Math.min(0.1, (now - (R.lastT || now)) / 1000);
   R.lastT = now;
   if (R.overlaySunMinute == null || Math.abs(S.minute - R.overlaySunMinute) > 30) R.overlayDirty = true;
-  if (R.overlayDirty) buildOverlay();
+  // while painting, rebuild the (slow, warped) overlay at most ~5 times a second
+  if (R.overlayDirty && (!UI.drag || now - (R.lastOverlay || 0) > 200)) { buildOverlay(); R.lastOverlay = now; }
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#121c2b';
   ctx.fillRect(0, 0, R.canvas.width, R.canvas.height);
   ctx.setTransform(R.dpr * z, 0, 0, R.dpr * z, -R.cam.x * z * R.dpr, -R.cam.y * z * R.dpr);
   ctx.imageSmoothingEnabled = true;
+  drawSkyAndBase(ctx);
   // Terrain lit by the sun: cross-fade between the two nearest pre-lit keys
   const [ka, kb, kf] = sunBlend(S.minute);
   const A = R.keys[ka] || R.keys.find(k => k), B = R.keys[kb];
@@ -572,14 +687,14 @@ function render() {
     const p = guestPos(g);
     pos.set(g, p);
     const sv = shadowVec(2.5 + (p.z || 0), sun);
-    const sx = p.x * TILE + sv.x * 0.6, sy = p.y * TILE + sv.y * 0.6;
+    const sx = p.x * TILE + sv.x * 0.6, sy = projY(p.x * TILE, p.y * TILE) + sv.y * 0.6 * KY;
     ctx.moveTo(sx + 1.8, sy); ctx.ellipse(sx, sy, 1.8, 1.1, 0, 0, Math.PI * 2);
   }
   ctx.fill();
   for (const g of S.guests) {
     if (g.state === 'inside') continue;
     const p = pos.get(g);
-    const X = p.x * TILE, Y = p.y * TILE - (p.z || 0);
+    const X = p.x * TILE, Y = projY(X, p.y * TILE) - (p.z || 0) / KY - 1;
     if (p.riding && p.lift.type !== 'rope' && p.lift.type !== 'tbar') {
       ctx.fillStyle = '#333'; ctx.fillRect(X - 2, Y + 0.5, 4, 1.5);
     }
@@ -619,33 +734,36 @@ function render() {
   // Lift warnings / labels
   ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
   for (const l of S.lifts) {
-    const X = (l.tx + 0.5) * TILE, Y = l.ty * TILE - 1;
+    const [X, Y0] = P(l.tx + 0.5, l.ty + 0.5), Y = Y0 - 12;
+    const [BX, BY] = P(l.bx + 0.5, l.by + 0.5);
     const blink = Math.floor(performance.now() / 500) % 2;
     if (R.view === 'queues' && l.usable) {
       const w = liftWait(l), t = isFinite(w) ? clamp(w / 12, 0, 1) : 1;
       const gm = liftGeom(l);
       ctx.strokeStyle = heatColor(t, 0.9); ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(gm.x0 * TILE, gm.y0 * TILE); ctx.lineTo(gm.x1 * TILE, gm.y1 * TILE); ctx.stroke();
+      ctx.beginPath();
+      for (let k = 0; k <= 20; k++) { const q = P(gm.x0 + gm.ux * gm.len * k / 20, gm.y0 + gm.uy * gm.len * k / 20); if (k) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]); }
+      ctx.stroke();
       const label = isFinite(w) ? `${Math.round(w)} min · ${l.queue.length}` : 'BROKEN';
       ctx.font = 'bold 7px system-ui';
       const lw = ctx.measureText(label).width + 6;
-      ctx.fillStyle = 'rgba(15,20,30,0.85)'; ctx.fillRect((l.bx + 0.5) * TILE - lw / 2, l.by * TILE - 11, lw, 10);
-      ctx.fillStyle = heatColor(t, 1); ctx.fillText(label, (l.bx + 0.5) * TILE, l.by * TILE - 2);
+      ctx.fillStyle = 'rgba(15,20,30,0.85)'; ctx.fillRect(BX - lw / 2, BY - 22, lw, 10);
+      ctx.fillStyle = heatColor(t, 1); ctx.fillText(label, BX, BY - 13);
     }
     if (l.broken) {
-      if (blink) { ctx.font = '12px system-ui'; ctx.fillText('🔧', (l.bx + l.tx + 1) / 2 * TILE, (l.by + l.ty) / 2 * TILE); }
+      if (blink) { const m = P((l.bx + l.tx + 1) / 2, (l.by + l.ty + 1) / 2); ctx.font = '12px system-ui'; ctx.fillText('🔧', m[0], m[1] - 12); }
     } else if (!l.usable && blink) {
       ctx.font = '12px system-ui'; ctx.fillText('⚠️', X, Y);
     } else if (!l.open) {
-      ctx.font = 'bold 7px system-ui'; ctx.fillStyle = '#e03131'; ctx.fillText('CLOSED', (l.bx + 0.5) * TILE, l.by * TILE - 1);
+      ctx.font = 'bold 7px system-ui'; ctx.fillStyle = '#e03131'; ctx.fillText('CLOSED', BX, BY - 12);
     }
     if (z >= 1.6 || (Sel.kind === 'lift' && Sel.id === l.id)) {
       ctx.font = '600 6px system-ui';
       ctx.fillStyle = 'rgba(20,25,35,0.75)';
       const w = ctx.measureText(l.name).width + 4;
-      ctx.fillRect((l.bx + 0.5) * TILE - w / 2, (l.by + 1) * TILE + 1, w, 8);
+      ctx.fillRect(BX - w / 2, BY + 7, w, 8);
       ctx.fillStyle = '#fff'; ctx.textBaseline = 'top';
-      ctx.fillText(l.name, (l.bx + 0.5) * TILE, (l.by + 1) * TILE + 2);
+      ctx.fillText(l.name, BX, BY + 8);
       ctx.textBaseline = 'bottom';
     }
   }
@@ -653,24 +771,32 @@ function render() {
     const l = S.lifts.find(x => x.id === Sel.id);
     if (l) {
       ctx.strokeStyle = '#ff8a3d'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 2.5]);
-      for (const [x, y] of [[l.bx, l.by], [l.tx, l.ty]]) ctx.strokeRect(x * TILE - 3, y * TILE - 3, TILE + 6, TILE + 6);
+      for (const [x, y] of [[l.bx, l.by], [l.tx, l.ty]]) withAnchor(ctx, (x + 0.5) * TILE, (y + 0.5) * TILE, () => ctx.strokeRect(x * TILE - 3, y * TILE - 9, TILE + 6, TILE + 12));
       ctx.setLineDash([]);
     }
   }
   if (Sel.kind === 'building') {
     const b = S.buildings.find(x => x.id === Sel.id);
-    if (b) { ctx.strokeStyle = '#ff8a3d'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 2.5]); ctx.strokeRect(b.x * TILE - 3, b.y * TILE - 3, b.size * TILE + 6, b.size * TILE + 6); ctx.setLineDash([]); }
+    if (b) {
+      const s = b.size * TILE;
+      ctx.strokeStyle = '#ff8a3d'; ctx.lineWidth = 1.5; ctx.setLineDash([3, 2.5]);
+      withAnchor(ctx, b.x * TILE + s / 2, b.y * TILE + s / 2, () => ctx.strokeRect(b.x * TILE - 3, b.y * TILE - 14, s + 6, s + 17));
+      ctx.setLineDash([]);
+    }
   }
 
   drawCloudShadows(ctx, rdt);
 
   // Entrance arch
+  ctx.save();
+  ctx.translate(0, projY(ENTRANCE.x * TILE, ENTRANCE.y * TILE) - ENTRANCE.y * TILE);
   ctx.fillStyle = '#7b341e';
   ctx.fillRect(ENTRANCE.x * TILE - 4, (MAP_H - 2) * TILE + 2, 3, 12);
   ctx.fillRect((ENTRANCE.x + 1) * TILE + 1, (MAP_H - 2) * TILE + 2, 3, 12);
   ctx.fillRect(ENTRANCE.x * TILE - 6, (MAP_H - 2) * TILE - 2, TILE + 12, 6);
   ctx.fillStyle = '#fff'; ctx.font = 'bold 4px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('SKI RESORT', (ENTRANCE.x + 0.5) * TILE, (MAP_H - 2) * TILE + 1);
+  ctx.restore();
 
   drawToolPreview(ctx);
 
@@ -695,7 +821,7 @@ function render() {
 function drawTracks(ctx, rdt) {
   if (!R.tracks) {
     R.tracks = document.createElement('canvas');
-    R.tracks.width = MAP_W * TILE; R.tracks.height = MAP_H * TILE;
+    R.tracks.width = mapW(); R.tracks.height = mapH();
     R.tracksDay = S.day;
   }
   const tc = R.tracks.getContext('2d');
@@ -713,7 +839,7 @@ function drawTracks(ctx, rdt) {
   for (const g of S.guests) {
     const skiing = g.state === 'walk' && T.piste[g.tile] && !T.village[g.tile];
     if (skiing && g._tx != null && Math.hypot(g.x - g._tx, g.y - g._ty) < 1.5) {
-      tc.moveTo(g._tx * TILE, g._ty * TILE); tc.lineTo(g.x * TILE, g.y * TILE);
+      tc.moveTo(g._tx * TILE, projY(g._tx * TILE, g._ty * TILE)); tc.lineTo(g.x * TILE, projY(g.x * TILE, g.y * TILE));
     }
     g._tx = skiing ? g.x : null; g._ty = g.y;
   }
@@ -739,7 +865,7 @@ function cloudSprite() {
 }
 
 function drawCloudShadows(ctx, rdt) {
-  const W = MAP_W * TILE, H = MAP_H * TILE;
+  const W = mapW(), H = mapH();
   if (!R.clouds) {
     R.clouds = [];
     for (let k = 0; k < 16; k++) {
@@ -789,12 +915,12 @@ function drawFloodlights(ctx, k) {
   };
   for (const l of S.lifts) {
     const gm = liftGeom(l);
-    for (let s = 0; s <= gm.len; s += 4) glow((gm.x0 + gm.ux * s) * TILE, (gm.y0 + gm.uy * s) * TILE, 3 * TILE, 0.16);
+    for (let s = 0; s <= gm.len; s += 4) { const q = P(gm.x0 + gm.ux * s, gm.y0 + gm.uy * s); glow(q[0], q[1] - 8, 3 * TILE, 0.16); }
   }
   if (T.reach) for (let i = 0; i < T.reach.length; i += 1) {
-    if (T.reach[i] && T.piste[i] && (tx(i) + ty(i)) % 5 === 0) glow((tx(i) + 0.5) * TILE, (ty(i) + 0.5) * TILE, 2 * TILE, 0.1);
+    if (T.reach[i] && T.piste[i] && (tx(i) + ty(i)) % 5 === 0) { const q = P(tx(i) + 0.5, ty(i) + 0.5); glow(q[0], q[1], 2 * TILE, 0.1); }
   }
-  for (const b of S.buildings) glow((b.x + b.size / 2) * TILE, (b.y + b.size / 2) * TILE, 1.5 * TILE * b.size, 0.22);
+  for (const b of S.buildings) { const q = P(b.x + b.size / 2, b.y + b.size / 2); glow(q[0], q[1], 1.5 * TILE * b.size, 0.22); }
   ctx.globalCompositeOperation = 'source-over';
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
@@ -802,27 +928,50 @@ function drawFloodlights(ctx, k) {
 // ---------- mini-map ----------
 
 function drawMinimap(cv) {
+  const PW = mapW(), PH = mapH();
+  const want = Math.round(cv.width * PH / PW);
+  if (cv.height !== want) { cv.height = want; cv.style.height = Math.round(cv.clientWidth * PH / PW) + 'px'; }
   const ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height, sx = W / (MAP_W * TILE), sy = H / (MAP_H * TILE);
+  const W = cv.width, H = cv.height, sx = W / PW, sy = H / PH;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#1b2940'; ctx.fillRect(0, 0, W, H);
   ctx.drawImage(R.terrain, 0, 0, W, H);
   ctx.drawImage(R.overlay, 0, 0, W, H);
   if (R.view === 'slope') ctx.drawImage(R.slope, 0, 0, W, H);
   else if (R.dyn && (R.view === 'condition' || R.view === 'snow' || R.view === 'traffic')) ctx.drawImage(R.dyn, 0, 0, W, H);
-  for (const b of S.buildings) { ctx.fillStyle = BUILDING_TYPES[b.type].color; ctx.fillRect(b.x * TILE * sx, b.y * TILE * sy, b.size * TILE * sx, b.size * TILE * sy); }
+  for (const b of S.buildings) { const q = P(b.x, b.y); ctx.fillStyle = BUILDING_TYPES[b.type].color; ctx.fillRect(q[0] * sx, q[1] * sy, b.size * TILE * sx, b.size * TILE * KY * sy); }
   ctx.lineWidth = 1.5;
   for (const l of S.lifts) {
+    const a = P(l.bx + 0.5, l.by + 0.5), c = P(l.tx + 0.5, l.ty + 0.5);
     ctx.strokeStyle = l.broken ? '#e03131' : '#222';
-    ctx.beginPath(); ctx.moveTo((l.bx + 0.5) * TILE * sx, (l.by + 0.5) * TILE * sy); ctx.lineTo((l.tx + 0.5) * TILE * sx, (l.ty + 0.5) * TILE * sy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(a[0] * sx, a[1] * sy); ctx.lineTo(c[0] * sx, c[1] * sy); ctx.stroke();
   }
   ctx.fillStyle = '#e8590c';
   for (const g of S.guests) {
     if (g.state === 'inside') continue;
     const p = guestPos(g);
-    ctx.fillRect(p.x * TILE * sx - 0.75, p.y * TILE * sy - 0.75, 1.5, 1.5);
+    ctx.fillRect(p.x * TILE * sx - 0.75, projY(p.x * TILE, p.y * TILE) * sy - 0.75, 1.5, 1.5);
   }
   ctx.strokeStyle = '#ffd43b'; ctx.lineWidth = 1.5;
   ctx.strokeRect(R.cam.x * sx, R.cam.y * sy, innerWidth / R.cam.zoom * sx, innerHeight / R.cam.zoom * sy);
+}
+
+// ---------- sky and diorama base ----------
+
+function drawSkyAndBase(ctx) {
+  const W = mapW(), off = R.tp ? R.tp.off : 0, bottom = mapH();
+  if (!R.skyGrad) {
+    const g = ctx.createLinearGradient(0, -400, 0, off + 60);
+    g.addColorStop(0, '#16243a'); g.addColorStop(0.6, '#3c5778'); g.addColorStop(1, '#a9bfd8');
+    R.skyGrad = g;
+  }
+  ctx.fillStyle = R.skyGrad;
+  ctx.fillRect(-400, -400, W + 800, off + 460);
+  // the cut face under the front edge of the map, like a model on a table
+  const fg = ctx.createLinearGradient(0, bottom, 0, bottom + 40);
+  fg.addColorStop(0, '#5b6b84'); fg.addColorStop(1, '#2b3b55');
+  ctx.fillStyle = fg;
+  ctx.fillRect(0, bottom - 1, W, 40);
 }
 
 const flakes = [];

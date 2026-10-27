@@ -202,11 +202,12 @@ function orderedLift(a, b) {
 }
 
 function targetAt(tile, wx, wy) {
-  let best = null, bd = 7 / R.cam.zoom / TILE + 0.15;
+  let best = null, bd = 7 / R.cam.zoom + 2.5;
+  const mp = [wx, projY(wx, wy)];
   for (const g of S.guests) {
     if (g.state === 'inside') continue;
     const p = guestPos(g);
-    const d = Math.hypot(p.x - wx / TILE, p.y - wy / TILE);
+    const d = Math.hypot(p.x * TILE - mp[0], projY(p.x * TILE, p.y * TILE) - (p.z || 0) / KY - mp[1]);
     if (d < bd) { bd = d; best = g; }
   }
   if (best) return { kind: 'guest', id: best.id };
@@ -249,7 +250,7 @@ function onDown(e) {
     endDrag();
     const [a, b] = [...UI.ptrs.values()];
     UI.pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y), z0: R.cam.zoom, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
-    UI.pinch.world = screenToWorld(UI.pinch.mx, UI.pinch.my);
+    UI.pinch.world = screenToProj(UI.pinch.mx, UI.pinch.my);
     return;
   }
   updateMouse(e);
@@ -393,8 +394,8 @@ function initMinimap() {
   let dragging = false;
   const jump = e => {
     const r = cv.getBoundingClientRect();
-    const wx = (e.clientX - r.left) / r.width * MAP_W * TILE, wy = (e.clientY - r.top) / r.height * MAP_H * TILE;
-    centerCamOn(wx, wy); UI.follow = null; UI.camMoved = true;
+    centerCamOnProj((e.clientX - r.left) / r.width * mapW(), (e.clientY - r.top) / r.height * mapH());
+    UI.follow = null; UI.camMoved = true;
   };
   cv.addEventListener('pointerdown', e => { dragging = true; cv.setPointerCapture(e.pointerId); jump(e); });
   cv.addEventListener('pointermove', e => { if (dragging) jump(e); });
@@ -453,8 +454,7 @@ function updateTooltip() {
 function drawToolPreview(ctx) {
   const m = UI.mouse;
   if (UI.tool === 'route' && UI.route.start != null) {
-    const s = UI.route.start;
-    ctx.strokeStyle = '#ffd43b'; ctx.lineWidth = 2; ctx.strokeRect(tx(s) * TILE, ty(s) * TILE, TILE, TILE);
+    ctx.strokeStyle = '#ffd43b'; ctx.lineWidth = 2; ctx.beginPath(); tilePath(ctx, UI.route.start); ctx.stroke();
   }
   if (!m.inside || m.tile < 0) return;
   const i = m.tile;
@@ -462,7 +462,7 @@ function drawToolPreview(ctx) {
     for (const t of brushTiles(i)) {
       const ok = UI.tool === 'piste' ? canPiste(t) : true;
       ctx.fillStyle = ok ? (UI.tool === 'piste' ? 'rgba(77,171,247,0.35)' : 'rgba(255,170,60,0.35)') : 'rgba(224,49,49,0.35)';
-      ctx.fillRect(tx(t) * TILE, ty(t) * TILE, TILE, TILE);
+      ctx.beginPath(); tilePath(ctx, t); ctx.fill();
     }
   } else if (UI.tool === 'route') {
     const p = currentRoute();
@@ -470,18 +470,18 @@ function drawToolPreview(ctx) {
       for (const t of p.tiles) {
         const d = Math.min(3, T.diff[t]);
         ctx.fillStyle = DIFFS[d].color; ctx.globalAlpha = d > UI.route.maxDiff ? 0.75 : 0.5;
-        ctx.fillRect(tx(t) * TILE, ty(t) * TILE, TILE, TILE);
+        ctx.beginPath(); tilePath(ctx, t); ctx.fill();
       }
       ctx.globalAlpha = 1;
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
       ctx.beginPath();
-      p.path.forEach((t, k) => { const x = (tx(t) + 0.5) * TILE, y = (ty(t) + 0.5) * TILE; if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+      p.path.forEach((t, k) => { const [x, y] = P(tx(t) + 0.5, ty(t) + 0.5); if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
       ctx.stroke(); ctx.setLineDash([]);
     }
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(tx(i) * TILE, ty(i) * TILE, TILE, TILE);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); tilePath(ctx, i); ctx.stroke();
   } else if (UI.tool === 'lift') {
     if (UI.liftStart == null) {
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.strokeRect(tx(i) * TILE, ty(i) * TILE, TILE, TILE);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); tilePath(ctx, i); ctx.stroke();
     } else {
       const [a, b] = orderedLift(UI.liftStart, i);
       const c = checkLift(UI.liftType, tx(a), ty(a), tx(b), ty(b));
@@ -493,13 +493,19 @@ function drawToolPreview(ctx) {
     drawBuilding(ctx, { id: 0, type: UI.buildType, x: o.x, y: o.y, size: BUILDING_TYPES[UI.buildType].size }, true, c.ok);
     if (UI.buildType === 'cannon') {
       ctx.strokeStyle = 'rgba(77,171,247,0.8)'; ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.arc((o.x + 0.5) * TILE, (o.y + 0.5) * TILE, 3.5 * TILE, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      const [cx, cy] = P(o.x + 0.5, o.y + 0.5);
+      ctx.beginPath(); ctx.ellipse(cx, cy, 3.5 * TILE, 3.5 * TILE * KY, 0, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
     }
   } else if (UI.tool === 'demolish') {
     const t = targetAt(i, m.wx, m.wy);
     ctx.strokeStyle = '#e03131'; ctx.lineWidth = 2;
-    if (t && t.kind === 'building') { const b = S.buildings.find(x => x.id === t.id); ctx.strokeRect(b.x * TILE, b.y * TILE, b.size * TILE, b.size * TILE); }
-    else if (t && t.kind === 'lift') { const l = S.lifts.find(x => x.id === t.id); for (const [x, y] of [[l.bx, l.by], [l.tx, l.ty]]) ctx.strokeRect(x * TILE, y * TILE, TILE, TILE); }
+    if (t && t.kind === 'building') {
+      const b = S.buildings.find(x => x.id === t.id), s = b.size * TILE;
+      withAnchor(ctx, b.x * TILE + s / 2, b.y * TILE + s / 2, () => ctx.strokeRect(b.x * TILE, b.y * TILE - 12, s, s + 12));
+    } else if (t && t.kind === 'lift') {
+      const l = S.lifts.find(x => x.id === t.id);
+      for (const [x, y] of [[l.bx, l.by], [l.tx, l.ty]]) withAnchor(ctx, (x + 0.5) * TILE, (y + 0.5) * TILE, () => ctx.strokeRect(x * TILE, y * TILE - 8, TILE, TILE + 8));
+    }
   }
 }
 
