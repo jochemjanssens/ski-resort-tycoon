@@ -263,17 +263,40 @@ body.has-tut #toasts { top: 222px; }
 .check input { width: 18px; height: 18px; accent-color: var(--accent); }
 
 /* ---------- responsive ---------- */
-@media (max-width: 1300px) {
+@media (max-width: 1480px) {
   .stats { gap: 16px; }
+  .windows button { width: 34px; }
+  .speed button { min-width: 38px; }
+}
+@media (max-width: 1380px) {
   #st-weather { display: none; }
+}
+@media (max-width: 1300px) {
   body.has-panel #info { right: auto; left: 100px; top: auto; bottom: 24px; max-height: 50vh; }
   body.has-panel #advisor { display: none; }
 }
-@media (max-width: 1080px) {
+@media (max-width: 1200px) {
   #st-guests { display: none; }
+}
+@media (max-width: 1080px) {
   #goalchip { display: none; }
   #topbar { gap: 12px; }
 }
+/* Two-row top bar: stats and speed on top, the panel buttons underneath. */
+@media (max-width: 1240px) {
+  #topbar { height: auto; flex-wrap: wrap; padding: 8px 16px; row-gap: 4px; }
+  #st-weather, #st-guests { display: flex; }
+  .windows { width: 100%; justify-content: flex-end; border-top: 1px solid var(--line); padding-top: 4px; }
+  #goalchip, #toolbar, #submenu, #panel, #info { top: calc(var(--tb, 112px) + 16px); }
+  #toolbar, #submenu { max-height: calc(100vh - var(--tb, 112px) - 32px); }
+  #panel, #info { max-height: calc(100vh - var(--tb, 112px) - 266px); }
+  #toasts { top: calc(var(--tb, 112px) + 68px); }
+  #tutorial { top: calc(var(--tb, 112px) + 64px); }
+  body.has-tut #tutorial { top: calc(var(--tb, 112px) + 16px); }
+  body.has-tut #toasts { top: calc(var(--tb, 112px) + 158px); }
+}
+@media (max-width: 980px) { #st-weather { display: none; } }
+@media (max-width: 880px) { #st-guests { display: none; } }
 @media (max-width: 760px) {
   #topbar { height: auto; gap: 6px 10px; padding: 6px 10px; flex-wrap: wrap; }
   .brand { display: none; }

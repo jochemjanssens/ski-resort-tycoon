@@ -25,6 +25,11 @@ function initLayers() {
   T.cannon = new Uint8Array(N);
   T.closed = new Uint8Array(N); // avalanche closures (today only)
   T.traffic = new Float32Array(N);
+  T.snow = new Float32Array(N);     // snow depth in cm
+  T.free = new Uint8Array(N);       // freeride zone
+  T.fresh = new Float32Array(N);    // untracked powder in freeride zones (0–1)
+  T.groomed = new Uint8Array(N);    // groomed last night
+  T.bare = new Uint8Array(N);       // too little snow to ski
 }
 
 function newGame(seed, scenarioId) {
@@ -52,6 +57,7 @@ function newGame(seed, scenarioId) {
     cache: emptyCache(),
   };
   S.stats.bestDay = 0; S.stats.totalGuests = 0;
+  initResort();
   Undo.stack = [];
   placeStarter();
   Net.dirty = true;
@@ -61,15 +67,16 @@ function newGame(seed, scenarioId) {
 
 function freshStats() {
   return { guestsToday: 0, turnedPrice: 0, turnedFull: 0, happySum: 0, happyN: 0, lastDayProfit: 0, bestDay: 0, totalGuests: 0,
-    injuries: 0, breakdowns: 0, leftThoughts: {}, repStart: 40 };
+    injuries: 0, breakdowns: 0, leftThoughts: {}, repStart: 40, regularsToday: 0, passVisits: 0, levelUps: 0 };
 }
 function emptyCache() { return { value: 0, demand: 0, capacity: 0, diffsOpen: 0, wtp: 0, diffSet: new Set(), pisteOpen: 0 }; }
 
 function emptyFin() {
-  return { tickets: 0, food: 0, rental: 0, school: 0, hotel: 0, rewards: 0, construction: 0, upkeep: 0, staff: 0, marketing: 0, research: 0, interest: 0 };
+  return { tickets: 0, passes: 0, food: 0, rental: 0, school: 0, hotel: 0, lease: 0, events: 0, rewards: 0,
+    construction: 0, upkeep: 0, snow: 0, staff: 0, marketing: 0, research: 0, interest: 0 };
 }
-const INCOME_KEYS = ['tickets', 'food', 'rental', 'school', 'hotel', 'rewards'];
-const EXPENSE_KEYS = ['construction', 'upkeep', 'staff', 'marketing', 'research', 'interest'];
+const INCOME_KEYS = ['tickets', 'passes', 'food', 'rental', 'school', 'hotel', 'lease', 'events', 'rewards'];
+const EXPENSE_KEYS = ['construction', 'upkeep', 'snow', 'staff', 'marketing', 'research', 'interest'];
 
 function earn(cat, amt) { S.money += amt; S.fin.today[cat] = (S.fin.today[cat] || 0) + amt; }
 function spend(cat, amt) { S.money -= amt; S.fin.today[cat] = (S.fin.today[cat] || 0) + amt; }
@@ -125,7 +132,7 @@ const Undo = { stack: [], cur: null };
 
 function beginAction(label) { Undo.cur = { label, tiles: new Map(), cost: 0, lifts: [], buildings: [] }; }
 function noteTile(i) {
-  if (Undo.cur && !Undo.cur.tiles.has(i)) Undo.cur.tiles.set(i, { piste: T.piste[i], tree: T.tree[i], cond: T.cond[i] });
+  if (Undo.cur && !Undo.cur.tiles.has(i)) Undo.cur.tiles.set(i, { piste: T.piste[i], tree: T.tree[i], cond: T.cond[i], free: T.free[i] });
 }
 function noteCost(c) { if (Undo.cur) Undo.cur.cost += c; }
 function endAction() {
@@ -141,7 +148,7 @@ function undo() {
   if (!a) { Events.emit('toast', { text: 'Nothing to undo', bad: true }); return; }
   for (const id of a.buildings) removeBuilding(id, 1, true);
   for (const id of a.lifts) removeLift(id, 1, true);
-  for (const [i, v] of a.tiles) { T.piste[i] = v.piste; T.tree[i] = v.tree; T.cond[i] = v.cond; }
+  for (const [i, v] of a.tiles) { T.piste[i] = v.piste; T.tree[i] = v.tree; T.cond[i] = v.cond; T.free[i] = v.free || 0; }
   if (a.cost) { S.money += a.cost; S.fin.today.construction -= a.cost; }
   Net.dirty = true;
   Events.emit('changed');
@@ -160,7 +167,7 @@ function paintPiste(tiles) {
   for (const i of todo) cost += PISTE_COST + (T.tree[i] ? TREE_CLEAR_COST : 0);
   if (!todo.length) return 0;
   if (cost > S.money) { Events.emit('toast', { text: 'Not enough money!', bad: true }); return 0; }
-  for (const i of todo) { noteTile(i); T.tree[i] = 0; T.piste[i] = 1; T.cond[i] = 100; }
+  for (const i of todo) { noteTile(i); T.tree[i] = 0; T.piste[i] = 1; T.cond[i] = 100; T.free[i] = 0; T.groomed[i] = 1; }
   spend('construction', cost); noteCost(cost);
   Net.dirty = true;
   return cost;
@@ -402,7 +409,11 @@ function removeBuilding(id, refundRatio, silent) {
   Net.dirty = true;
   if (!silent) Events.emit('toast', { text: `${BUILDING_TYPES[b.type].name} demolished (refund ${fmt$(refund)})` });
 }
-function demolishBuilding(id) { removeBuilding(id, 0.4); }
+function demolishBuilding(id) {
+  const b = S.buildings.find(x => x.id === id);
+  if (b && BUILDING_TYPES[b.type].private) return buyOutPrivate(id);
+  removeBuilding(id, 0.4);
+}
 
 function buildingDoor(b) {
   const cx = b.x + Math.floor(b.size / 2);
@@ -423,7 +434,8 @@ function staffNeeded(type) {
     const cap = S.buildings.filter(b => b.type === 'school').length * BUILDING_TYPES.school.capacity;
     return Math.ceil(cap / STAFF_TYPES.instructor.per);
   }
-  return Math.max(S.lifts.length ? 1 : 0, Math.ceil(S.lifts.length / STAFF_TYPES[type].per));
+  const base = Math.max(S.lifts.length ? 1 : 0, Math.ceil(S.lifts.length / STAFF_TYPES[type].per));
+  return type === 'patrol' ? base + Math.ceil(freerideTiles() / FREERIDE.patrolPer) : base;
 }
 
 function staffCoverage(type) {
@@ -478,11 +490,14 @@ function toggleNightSkiing() {
 function isWalk(i) {
   if (T.occ[i] < 0) return true;
   if (T.occ[i] > 0 || T.closed[i]) return false;
-  return T.village[i] === 1 || T.piste[i] === 1;
+  if (T.village[i] === 1) return true;
+  if (T.bare[i]) return false;
+  return T.piste[i] === 1 || (T.free[i] === 1 && freeOpen());
 }
 
 function tileDiff(i) {
   if (T.occ[i] < 0 || T.village[i]) return 0;
+  if (T.free[i] && !T.piste[i]) return Math.max(2, T.diff[i]); // off-piste is never easy
   return T.diff[i];
 }
 
@@ -535,6 +550,7 @@ function computeField(sources, skill) {
       if (up > 0) cost += 2;
       const df = tileDiff(b);
       if (df > skill) cost += (df - skill) * 14;
+      else if (skill >= 2 && T.free[b] && !T.piste[b]) cost *= skill === 3 ? 0.45 : 0.7; // good skiers seek out the powder
       const nd = d + cost;
       if (nd < dist[a]) { dist[a] = nd; next[a] = b; heap.push(a, nd); }
     }
@@ -636,28 +652,25 @@ function recalcValue() {
   v += Math.min(12, countB('park') * 6);
   v += countB('hotel') * 5;
   if (S.night.on) v += 8;
+  v += Math.min(10, freerideTiles() / 12);
+  v += Math.min(6, countB('shop') * 2);
   S.cache.value = v;
-  S.cache.capacity = 80 + countB('parking') * 100 + countB('hotel') * 60;
+  const beds = villageBeds();
+  S.cache.beds = beds;
+  S.cache.capacity = 80 + countB('parking') * 100 + countB('hotel') * 60 + beds;
   const w = WEATHER[S.weather.type];
   const fresh = S.weather.fresh >= 15;
   let mk = 1;
   for (const C of activeCampaigns()) mk += C.demand + (C.powder && fresh ? C.powder : 0);
+  const E = eventLive();
+  if (E) mk += E.demand;
   S.cache.marketing = mk;
-  S.cache.demand = (20 + v * 3.5) * (0.35 + S.reputation / 55) * w.mult * (fresh ? 1.25 : 1) * (1 + 0.15 * countB('hotel')) * mk;
+  S.cache.demand = (20 + v * 3.5) * (0.35 + S.reputation / 55) * w.mult * (fresh ? 1.25 : 1) * (1 + 0.15 * countB('hotel') + beds / 500) * mk
+    + passHolders() * 0.3 * w.mult;
   S.cache.wtp = 16 + v * 0.5 + S.reputation * 0.25;
 }
 
 // ---------- guests ----------
-
-function snowAt(i) {
-  const natural = S.weather.snow + (T.height[i] - BASE_ALT) / 15;
-  return T.cannon[i] ? Math.max(natural, 80) : natural;
-}
-
-function pisteQuality(i) {
-  if (!T.piste[i] || T.village[i]) return 1;
-  return (T.cond[i] / 100) * clamp((snowAt(i) - 10) / 50, 0.15, 1);
-}
 
 function think(g, key) {
   const last = g.thoughts[0];
@@ -674,15 +687,19 @@ function setGuestTile(g, i) {
 function spawnGuest() {
   if (S.guests.length >= S.cache.capacity) { S.stats.turnedFull++; return; }
   const camps = activeCampaigns();
-  const kidShare = 0.18 + camps.reduce((a, c) => a + (c.kids || 0), 0);
-  const boardShare = 0.22 + camps.reduce((a, c) => a + (c.boards || 0), 0);
-  const expertBoost = camps.reduce((a, c) => a + (c.experts || 0), 0);
-  const kind = rand() < kidShare ? 'kid' : rand() < boardShare ? 'board' : 'adult';
-  const price = kind === 'kid' ? Math.round(S.prices.ticket * 0.6) : S.prices.ticket;
-  const wtp = S.cache.wtp * (0.7 + rand() * 0.7) * (kind === 'kid' ? 0.6 : 1);
+  const E = eventLive() || {};
+  const kidShare = 0.18 + camps.reduce((a, c) => a + (c.kids || 0), 0) + (E.kids || 0);
+  const boardShare = 0.22 + camps.reduce((a, c) => a + (c.boards || 0), 0) + (E.boards || 0);
+  const expertBoost = camps.reduce((a, c) => a + (c.experts || 0), 0) + (E.experts || 0) + Math.min(0.15, freerideTiles() / 400);
+  const reg = pickRegular();
+  if (reg) reg.last = absDay();
+  const kind = reg ? reg.kind : rand() < kidShare ? 'kid' : rand() < boardShare ? 'board' : 'adult';
+  const price = reg && reg.pass ? 0 : kind === 'kid' ? Math.round(S.prices.ticket * 0.6) : S.prices.ticket;
+  const wtp = S.cache.wtp * (0.7 + rand() * 0.7) * (kind === 'kid' ? 0.6 : 1) * (reg ? 1 + reg.loyalty / 150 : 1);
   if (price > wtp) { S.stats.turnedPrice++; return; }
   let skill;
-  if (kind === 'kid') skill = rand() < 0.6 ? 0 : 1;
+  if (reg) skill = reg.skill;
+  else if (kind === 'kid') skill = rand() < 0.6 ? 0 : 1;
   else {
     const r = rand();
     skill = r < 0.25 ? 0 : r < 0.6 ? 1 : r < 0.85 ? 2 : 3;
@@ -698,7 +715,20 @@ function spawnGuest() {
     ox: (rand() - 0.5) * 0.5, oy: (rand() - 0.5) * 0.5, lane: rand() * 2 - 1,
     runStartH: 0, runMaxDiff: 0, runQ: 0, runN: 0, leaving: false, timer: 0, bld: 0, queueTime: 0,
     arrived: S.minute, lesson: false, wx: 0, wy: 0, parkVisits: 0,
+    xp: 0, reg: 0, runFree: 0, runFresh: 0, runMog: 0, runThin: 0, runGroomed: 0,
   };
+  if (reg) {
+    Object.assign(g, { name: reg.name, color: reg.color, xp: reg.xp || 0, reg: reg.id });
+    S.stats.regularsToday++;
+    if (reg.pass) { S.stats.passVisits++; g.happy += 3; think(g, 'pass'); }
+    else if (rand() < 0.5) { g.happy += 3; think(g, 'regular'); }
+  }
+  const beds = S.cache.beds || 0;
+  if (beds && rand() < beds / (S.cache.capacity || 1)) {
+    g.stay = true; g.cash += 40;
+    if (rand() < luxBeds() / beds) { g.cash *= 2; g.lux = true; }
+    if (rand() < 0.35) { g.happy += 3; think(g, 'chalet'); }
+  }
   if (isNightSession()) { g.energy = 55 + rand() * 30; g.hunger = 40 + rand() * 30; }
   setGuestTile(g, idx(ENTRANCE.x, ENTRANCE.y));
   S.guests.push(g);
@@ -708,9 +738,11 @@ function spawnGuest() {
   if (price < wtp * 0.65) { g.happy += 5; think(g, 'good_value'); }
   else if (price > wtp * 0.9) { g.happy -= 3; think(g, 'pricey_pass'); }
   if (S.weather.fresh >= 15) { g.happy += 6; think(g, 'powder'); }
-  if (S.campaigns.some(c => c.id === 'race' && !c.delay)) { g.happy += 4; think(g, 'race'); }
+  if (E.name) { g.happy += 4; think(g, S.event.id === 'race' ? 'race' : 'event'); }
   if (T.closed.some(v => v) && rand() < 0.3) think(g, 'avalanche');
-  if (rand() < (kind === 'kid' ? 0.5 : 0.3)) {
+  const rep0 = snowReport();
+  if (rep0.n && rep0.bare > rep0.n * 0.3) { g.happy -= 6; think(g, 'bare'); }
+  if (rand() < (kind === 'kid' ? 0.5 : 0.3) * (reg && reg.visits > 3 ? 0.4 : 1)) {
     if (countB('rental')) {
       const p = S.prices.rental;
       if (g.cash >= p) { g.cash -= p; g.spent += p; earn('rental', p); const b = S.buildings.find(x => x.type === 'rental'); b.visits++; b.income += p; }
@@ -724,6 +756,7 @@ function leaveResort(g) {
   S.stats.happySum += g.happy; S.stats.happyN++;
   const lt = S.stats.leftThoughts;
   for (const t of g.thoughts) lt[t.key] = (lt[t.key] || 0) + 1;
+  rememberGuest(g);
   if (Sel.kind === 'guest' && Sel.id === g.id) Sel.kind = null;
 }
 
@@ -820,8 +853,10 @@ function injure(g) {
   else { think(g, 'slow_rescue'); S.reputation -= 0.3; }
 }
 
+function resetRun(g) { g.runN = 0; g.runQ = 0; g.runMaxDiff = 0; g.runFree = 0; g.runFresh = 0; g.runMog = 0; g.runThin = 0; g.runGroomed = 0; }
+
 function finishRun(g) {
-  if (g.runN < 2) { g.runN = 0; return; }
+  if (g.runN < 2) { resetRun(g); return; }
   const drop = g.runStartH - T.height[g.tile];
   const q = g.runQ / g.runN;
   const over = g.runMaxDiff - g.skill;
@@ -836,11 +871,21 @@ function finishRun(g) {
     if (drop > 220 && q > 0.6) think(g, 'great_run');
     else if (fun > 3 && rand() < 0.3) think(g, 'nice_run');
     if (isNightSession() && rand() < 0.3) { think(g, 'night'); g.happy += 2; }
+    // Off-piste powder and moguls are what experts come for.
+    if (g.runFree >= 3) {
+      const fr = g.runFresh / g.runFree;
+      g.happy += Math.min(10, g.runFree * 0.5 * (0.3 + fr));
+      if (fr > 0.5) think(g, 'freeride'); else if (fr < 0.2 && rand() < 0.5) { think(g, 'tracked'); g.happy -= 1; }
+    }
+    if (g.runMog >= 3 && g.skill === 3) { g.happy += 4; if (rand() < 0.5) think(g, 'moguls'); }
+    if (g.runGroomed >= g.runN * 0.7 && S.minute < 10 * 60 + 30 && q > 0.85 && rand() < 0.25) { g.happy += 2; think(g, 'corduroy'); }
+    if (drop > 20) addXp(g, g.runMaxDiff >= g.skill ? 1 : 0.4);
   }
-  if (q < 0.35 && rand() < 0.6) { g.happy -= 3; think(g, 'icy'); }
+  if (g.runThin >= 3 && rand() < 0.5) { g.happy -= 4; think(g, 'thin'); }
+  else if (q < 0.35 && rand() < 0.6) { g.happy -= 3; think(g, 'icy'); }
   g.happy = clamp(g.happy, 0, 100);
-  g.runN = 0; g.runQ = 0; g.runMaxDiff = 0;
-  const risk = (over > 0 ? 0.035 * over : 0.0008) + (q < 0.35 ? 0.004 : 0);
+  const risk = (over > 0 ? 0.035 * over : 0.0008) + (q < 0.35 ? 0.004 : 0) + Math.min(0.01, g.runFree * 0.0004) + (g.runThin >= 3 ? 0.003 : 0);
+  resetRun(g);
   if (rand() < risk) injure(g);
 }
 
@@ -863,6 +908,15 @@ function enterTile(g, i) {
     T.traffic[i] += 1;
     g.runMaxDiff = Math.max(g.runMaxDiff, T.diff[i]);
     g.runQ += pisteQuality(i); g.runN++;
+    if (T.snow[i] < SNOW.thinBelow) g.runThin++;
+    if (T.groomed[i]) g.runGroomed++;
+    else if (T.diff[i] >= 3) g.runMog++;
+  } else if (T.free[i] && !T.village[i]) {
+    T.traffic[i] += 1;
+    g.runMaxDiff = Math.max(g.runMaxDiff, tileDiff(i));
+    g.runQ += pisteQuality(i); g.runN++;
+    g.runFree++; g.runFresh += T.fresh[i];
+    T.fresh[i] = Math.max(0, T.fresh[i] - 0.06);
   }
   if (g.leaving) return false;
   const bs = Net.adj.get(i);
@@ -894,13 +948,14 @@ function exitBuilding(g) {
     if (g.cash >= p) {
       g.cash -= p; g.spent += p; earn('food', p); b.income += p; b.visits++;
       g.hunger = 0; g.energy = Math.min(100, g.energy + 12);
-      if (S.prices.food > FAIR_PRICES.food * 1.5) { g.happy -= 4; think(g, 'food_pricey'); }
+      const fest = (eventLive() || {}).food ? 1.4 : 1;
+      if (S.prices.food > FAIR_PRICES.food * 1.5 * fest * (g.lux ? 1.6 : 1)) { g.happy -= 4; think(g, 'food_pricey'); }
       else { g.happy += 6; think(g, 'food_good'); }
     } else { g.hunger = Math.max(0, g.hunger - 20); }
   } else if (B.kind === 'school') {
     const p = S.prices.school;
     if (g.cash >= p) { g.cash -= p; g.spent += p; earn('school', p); b.income += p; b.visits++; }
-    if (rand() < 0.75) g.skill = 1;
+    addXp(g, g.skill === 0 ? Math.ceil(SKILL_XP[0] * 0.85) + (rand() < 0.75 ? 4 : 0) : 8);
     g.happy += S.prices.school > FAIR_PRICES.school * 1.5 ? 2 : 10; think(g, 'lesson');
   } else if (B.kind === 'park') {
     b.visits++; g.parkVisits++;
@@ -913,7 +968,7 @@ function exitBuilding(g) {
 }
 
 function updateGuest(g, dt) {
-  g.hunger = Math.min(100, g.hunger + 0.15 * dt);
+  g.hunger = Math.min(100, g.hunger + 0.15 * dt * ((eventLive() || {}).food ? 1.4 : 1));
   g.energy -= 0.03 * dt;
   if (g.hunger > 85) { g.happy -= 0.04 * dt; if (rand() < 0.01) think(g, 'hungry'); }
   switch (g.state) {
@@ -990,12 +1045,13 @@ function stepWalk(g, dt) {
   }
   const n = g.next;
   const nx = tx(n) + 0.5 + g.ox, ny = ty(n) + 0.5 + g.oy;
-  const walking = T.village[g.tile] || T.occ[g.tile] < 0 || !T.piste[g.tile];
+  const walking = T.village[g.tile] || T.occ[g.tile] < 0 || (!T.piste[g.tile] && !T.free[g.tile]);
   let v;
   if (walking) v = 1.8;
   else {
     v = (2.4 + T.grade[g.tile] * 14) * (0.65 + 0.15 * g.skill) * (g.kind === 'kid' ? 0.8 : 1);
-    if (T.diff[g.tile] > g.skill) v *= 0.55;
+    if (tileDiff(g.tile) > g.skill) v *= 0.55;
+    if (!T.piste[g.tile] && T.tree[g.tile]) v *= 0.7; // tree skiing
     v = clamp(v, 1.5, 11);
   }
   const step = v * dt;
@@ -1037,7 +1093,7 @@ function updateLift(l, dt) {
       const g = r.g;
       setGuestTile(g, idx(l.tx, l.ty));
       if (L.rest) { g.energy = Math.min(100, g.energy + L.rest); if (rand() < 0.1) think(g, 'comfy'); }
-      g.runStartH = T.height[g.tile]; g.runMaxDiff = 0; g.runQ = 0; g.runN = 0;
+      g.runStartH = T.height[g.tile]; resetRun(g);
       g.state = 'decide';
     }
   }
@@ -1091,6 +1147,7 @@ function advisorCheck() {
   if (beginners.length > 8 && beginners.filter(g => g.thoughts.some(t => t.key === 'too_hard' || t.key === 'nothing')).length > beginners.length * 0.4) {
     advise('beginners', 'Beginners are struggling. They need lifts with green runs back down.');
   }
+  resortAdvice();
 }
 
 // ---------- time ----------
@@ -1110,6 +1167,7 @@ function simulate(dt) {
   const prevHour = Math.floor(S.minute / 60);
   S.minute += dt;
   spawnTick(dt);
+  if (S.avy.at > 0 && S.minute >= S.avy.at) freerideAvalanche();
   for (const l of S.lifts) updateLift(l, dt);
   const gs = S.guests.slice();
   for (const g of gs) updateGuest(g, dt);
@@ -1142,23 +1200,18 @@ function endDay() {
   const avgHappy = S.stats.happyN ? S.stats.happySum / S.stats.happyN : 0;
   if (S.stats.happyN) S.reputation += (avgHappy - S.reputation) * 0.15 * Math.min(1, S.stats.happyN / 40);
   S.reputation = clamp(S.reputation, 0, 100);
-  // Race result
-  if (S.campaigns.some(c => c.id === 'race' && !c.delay)) {
-    if (avgHappy > 65) { S.reputation = Math.min(100, S.reputation + 5); Events.emit('toast', { text: '🏁 The ski race was a big success! Rating +5', big: true }); }
-    else { S.reputation -= 2; Events.emit('toast', { text: '🏁 The race was a let-down — guests were unhappy. Rating −2', bad: true }); }
-  }
+  eventNight(S.stats.happyN ? avgHappy : 0);
   // Campaigns tick
   for (const c of S.campaigns) { if (c.delay) c.delay--; else c.daysLeft--; }
   S.campaigns = S.campaigns.filter(c => c.daysLeft > 0);
-  // Grooming, snow, traffic
-  const groomer = countB('groomer') > 0;
-  for (let i = 0; i < T.cond.length; i++) {
-    if (T.piste[i]) T.cond[i] = groomer ? 100 : Math.min(100, T.cond[i] + 50);
-    T.traffic[i] *= 0.5;
-  }
+  nightVillage({ guests: S.stats.guestsToday });
+  // Weather, snow, grooming, traffic
   T.closed.fill(0);
   rollWeather();
+  nightSnow();
+  for (let i = 0; i < T.traffic.length; i++) T.traffic[i] *= 0.5;
   avalancheCheck();
+  avyForecast();
 
   const f = S.fin.today;
   const inc = INCOME_KEYS.reduce((a, k) => a + (f[k] || 0), 0);
@@ -1167,6 +1220,7 @@ function endDay() {
     year: S.year, day: S.day, income: inc, expenses: exp, profit: inc - exp, guests: S.stats.guestsToday,
     turnedPrice: S.stats.turnedPrice, turnedFull: S.stats.turnedFull, happy: avgHappy, fin: { ...f },
     thoughts: { ...S.stats.leftThoughts }, repDelta: S.reputation - S.stats.repStart, injuries: S.stats.injuries, breakdowns: S.stats.breakdowns,
+    regulars: S.stats.regularsToday, passVisits: S.stats.passVisits, levelUps: S.stats.levelUps,
   };
   S.fin.history.push(summary);
   if (S.fin.history.length > 60) S.fin.history.shift();
@@ -1175,11 +1229,19 @@ function endDay() {
   checkGoals();
 
   S.fin.today = emptyFin();
-  Object.assign(S.stats, { guestsToday: 0, turnedPrice: 0, turnedFull: 0, happySum: 0, happyN: 0, injuries: 0, breakdowns: 0, leftThoughts: {}, repStart: S.reputation });
+  Object.assign(S.stats, { guestsToday: 0, turnedPrice: 0, turnedFull: 0, happySum: 0, happyN: 0, injuries: 0, breakdowns: 0, leftThoughts: {}, repStart: S.reputation,
+    regularsToday: 0, passVisits: 0, levelUps: 0 });
   S.minute = DAY_START; S.spawnAcc = 0;
   S.day++;
   let seasonEnd = false;
-  if (S.day > DAYS_PER_SEASON) { S.day = 1; S.year++; seasonEnd = true; S.weather.snow = Math.round(scenario().snow * 0.7); }
+  if (S.day > DAYS_PER_SEASON) {
+    S.day = 1; S.year++; seasonEnd = true;
+    S.weather.snow = Math.round(scenario().snow * 0.7);
+    initSnow();
+    seasonRollover();
+  }
+  sellPasses();
+  eventMorning();
   Net.dirty = true;
   recalcValue();
   Events.emit('dayend', { summary, seasonEnd });
@@ -1295,7 +1357,9 @@ function packBits(arr) {
 function saveGame(auto) {
   try {
     const data = {
-      v: 1, seed: S.seed, tree: packBits(T.tree), piste: packBits(T.piste),
+      v: 1, seed: S.seed, tree: packBits(T.tree), piste: packBits(T.piste), free: packBits(T.free),
+      snow: Array.from(T.snow, v => Math.round(v)), fresh: Array.from(T.fresh, v => Math.round(v * 100)),
+      cond: Array.from(T.cond, v => Math.round(v)), groomed: packBits(T.groomed),
       S: {
         ...S, guests: [],
         lifts: S.lifts.map(l => ({ ...l, queue: [], riders: [] })),
@@ -1324,12 +1388,16 @@ function loadGame() {
   T = generateTerrain(data.seed, sc.terrain);
   initLayers();
   const N = MAP_W * MAP_H;
+  // Saves from before the village grew have fewer rows; the extra rows are empty village.
+  for (const k of ['tree', 'piste', 'free', 'groomed']) if (typeof data[k] === 'string') data[k] = data[k].padEnd(N, '0');
+  for (const [k, v] of [['snow', 0], ['fresh', 100], ['cond', 100]]) if (data[k]) while (data[k].length < N) data[k].push(v);
   for (let i = 0; i < N; i++) { T.tree[i] = data.tree[i] === '1' ? 1 : 0; T.piste[i] = data.piste[i] === '1' ? 1 : 0; }
   S = data.S;
   // Defaults for saves from older versions
   S.scenario = S.scenario || 'alpine';
   S.staff = S.staff || { mechanic: 1, patrol: 1, instructor: 2 };
-  S.campaigns = S.campaigns || [];
+  S.campaigns = (S.campaigns || []).filter(c => CAMPAIGNS[c.id]);
+  fillResortDefaults();
   S.night = S.night || { installed: false, on: false };
   S.advice = S.advice || {}; S.adviceLog = S.adviceLog || [];
   S.stats = { ...freshStats(), ...S.stats, leftThoughts: S.stats.leftThoughts || {} };
@@ -1337,6 +1405,14 @@ function loadGame() {
   S.paused = false;
   S.research.unlocked = new Set(S.research.unlocked);
   S.cache = emptyCache();
+  S.fin.today = { ...emptyFin(), ...S.fin.today };
+  if (data.snow) {
+    for (let i = 0; i < N; i++) {
+      T.snow[i] = data.snow[i]; T.fresh[i] = data.fresh[i] / 100; T.cond[i] = data.cond[i];
+      T.free[i] = data.free[i] === '1' ? 1 : 0; T.groomed[i] = data.groomed[i] === '1' ? 1 : 0;
+    }
+    updateBare();
+  } else initSnow();
   for (const l of S.lifts) {
     l.age = l.age || 0; l.broken = false; l.repair = 0; l.breakdowns = l.breakdowns || 0;
     T.occ[idx(l.bx, l.by)] = -l.id; T.occ[idx(l.tx, l.ty)] = -l.id;

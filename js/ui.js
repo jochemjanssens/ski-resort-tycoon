@@ -6,7 +6,7 @@ const UI = {
   route: { start: null, maxDiff: 0, key: '', plan: null },
   mouse: { sx: 0, sy: 0, wx: 0, wy: 0, tile: -1, inside: false },
   drag: null, keys: new Set(), ptrs: new Map(), pinch: null, camMoved: false,
-  startScenario: 'alpine', startTutorial: true,
+  startScenario: 'alpine', startTutorial: true, freeMode: 'mark',
 };
 const $ = s => document.querySelector(s);
 const money = fmt$;
@@ -14,7 +14,7 @@ const pct = n => Math.round(n) + '%';
 const fmtNum = n => Math.round(n).toLocaleString('en-US');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const clockStr = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.floor(m % 60)).padStart(2, '0')}`;
-const BRUSH_TOOLS = ['piste', 'unpiste', 'clear', 'plant'];
+const BRUSH_TOOLS = ['piste', 'unpiste', 'clear', 'plant', 'freeride'];
 
 function initUI() {
   const cv = R.canvas;
@@ -81,8 +81,8 @@ function viewLegend() {
   const heat = (a, b) => `<div class="legend"><span><i style="background:${heatColor(0, 1)}"></i>${a}</span><span><i style="background:${heatColor(0.5, 1)}"></i>OK</span><span><i style="background:${heatColor(1, 1)}"></i>${b}</span></div>`;
   return {
     none: '', slope: diffLegend,
-    condition: heat('Perfect', 'Icy / thin') + '<p class="hint">Groomer garages restore pistes every night. Snow cannons protect thin snow.</p>',
-    snow: '<div class="legend"><span><i style="background:rgba(200,120,60,.6)"></i>Under 30 cm</span><span><i style="background:rgba(40,110,230,.35)"></i>Good</span><span><i style="background:rgba(40,110,230,.7)"></i>Deep</span></div>',
+    condition: heat('Perfect', 'Icy / thin') + '<p class="hint">Snowcats groom the busiest pistes each night. Snow cannons top up thin snow. Settings are in the ❄️ Snow panel.</p>',
+    snow: '<div class="legend"><span><i style="background:rgba(150,90,40,.7)"></i>Bare</span><span><i style="background:rgba(200,120,60,.6)"></i>Under 30 cm</span><span><i style="background:rgba(40,110,230,.35)"></i>Good</span><span><i style="background:rgba(40,110,230,.7)"></i>Deep</span></div>',
     traffic: heat('Quiet', 'Busy') + '<p class="hint">Where skiers have been today. Busy pistes wear out faster.</p>',
     queues: heat('Short', 'Long') + '<p class="hint">Each lift shows its current wait and queue length.</p>',
   }[R.view];
@@ -107,6 +107,7 @@ function renderSubmenu() {
   } else if (UI.tool === 'building') {
     h += '<h3>Facilities</h3>';
     for (const [k, B] of Object.entries(BUILDING_TYPES)) {
+      if (B.private) continue;
       const locked = !isUnlocked('building:' + k);
       h += `<button class="card ${UI.buildType === k ? 'on' : ''} ${locked ? 'locked' : ''}" data-action="buildtype" data-id="${k}">
         <span class="ic">${B.icon}</span><span class="nm">${B.name}</span>
@@ -120,6 +121,11 @@ function renderSubmenu() {
       <div class="hint" style="margin:6px 4px">Width</div>
       <div class="brush">${[1, 2, 3].map(n => `<button class="${UI.brush === n ? 'on' : ''}" data-action="brush" data-id="${n}">${n} tile${n > 1 ? 's' : ''}</button>`).join('')}</div>
       <p class="hint">Click a high point, then a lower point (a lift station or the village). The piste follows the gentlest line downhill. Right-click to cancel.</p>`;
+  } else if (UI.tool === 'freeride') {
+    h += `<h3>Freeride zones · ${money(FREERIDE.cost)}/tile</h3>
+      <div class="brush">${[['mark', 'Mark zone'], ['remove', 'Remove']].map(([k, n]) => `<button class="${UI.freeMode === k ? 'on' : ''}" data-action="freemode" data-id="${k}">${n}</button>`).join('')}</div>
+      <div class="brush" style="margin-top:6px">${[1, 2, 3].map(n => `<button class="${UI.brush === n ? 'on' : ''}" data-action="brush" data-id="${n}">${n}×${n}</button>`).join('')}</div>
+      <p class="hint">Mark open slopes or forest that touch a lift top or a piste, and lead back down to one. Advanced and expert skiers love untracked powder here — but fresh snow brings avalanche danger. Manage it in the ❄️ Snow panel.</p>`;
   } else if (BRUSH_TOOLS.includes(UI.tool)) {
     const names = { piste: `Paint pistes · ${money(PISTE_COST)}/tile (+${money(TREE_CLEAR_COST)} if trees)`, unpiste: 'Remove pistes', clear: `Clear trees · ${money(TREE_CLEAR_COST)}/tile`, plant: 'Plant trees · $15/tile' };
     h += `<h3>${names[UI.tool]}</h3><div class="brush">${[1, 2, 3].map(n => `<button class="${UI.brush === n ? 'on' : ''}" data-action="brush" data-id="${n}">${n}×${n}</button>`).join('')}</div>`;
@@ -166,6 +172,7 @@ function applyBrush(from, to) {
   else if (UI.tool === 'unpiste') changed = removePiste(tiles);
   else if (UI.tool === 'clear') changed = clearTrees(tiles);
   else if (UI.tool === 'plant') changed = plantTrees(tiles);
+  else if (UI.tool === 'freeride') changed = UI.freeMode === 'mark' ? paintFree(tiles) : removeFree(tiles);
   if (changed) R.overlayDirty = true;
 }
 
@@ -202,13 +209,12 @@ function orderedLift(a, b) {
 }
 
 function targetAt(tile, wx, wy) {
-  let best = null, bd = 7 / R.cam.zoom + 2.5;
-  const mp = [wx, projY(wx, wy)];
-  for (const g of S.guests) {
-    if (g.state === 'inside') continue;
-    const p = guestPos(g);
-    const d = Math.hypot(p.x * TILE - mp[0], projY(p.x * TILE, p.y * TILE) - (p.z || 0) / KY - mp[1]);
-    if (d < bd) { bd = d; best = g; }
+  let best = null, bd = 14;
+  const m = UI.mouse;
+  for (const [g, w] of R.gpos) {
+    const p = worldToScreen(w.clone().setY(w.y + 0.2));
+    const d = Math.hypot(p.x - m.sx, p.y - m.sy);
+    if (!p.behind && d < bd) { bd = d; best = g; }
   }
   if (best) return { kind: 'guest', id: best.id };
   if (tile < 0) return null;
@@ -249,8 +255,7 @@ function onDown(e) {
     // two fingers: pinch-zoom and pan, cancel whatever the first finger started
     endDrag();
     const [a, b] = [...UI.ptrs.values()];
-    UI.pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y), z0: R.cam.zoom, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
-    UI.pinch.world = screenToProj(UI.pinch.mx, UI.pinch.my);
+    UI.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, a: Math.atan2(b.y - a.y, b.x - a.x) };
     return;
   }
   updateMouse(e);
@@ -258,15 +263,16 @@ function onDown(e) {
   const m = UI.mouse;
   if (e.button === 1 || e.button === 2) {
     if (e.button === 2 && (UI.liftStart != null || UI.route.start != null)) { UI.liftStart = null; UI.route.start = null; return; }
-    UI.drag = { kind: 'pan', sx: m.sx, sy: m.sy, cx: R.cam.x, cy: R.cam.y, moved: false };
+    // right-drag (or shift + middle) turns and tilts the camera, middle-drag pans
+    UI.drag = { kind: e.button === 2 || e.shiftKey ? 'rotate' : 'pan', sx: m.sx, sy: m.sy, lx: m.sx, ly: m.sy, moved: false };
     return;
   }
   if (UI.tool === 'inspect') {
-    UI.drag = { kind: 'pan', sx: m.sx, sy: m.sy, cx: R.cam.x, cy: R.cam.y, moved: false, click: true };
+    UI.drag = { kind: e.shiftKey ? 'rotate' : 'pan', sx: m.sx, sy: m.sy, lx: m.sx, ly: m.sy, moved: false, click: true };
   } else if (BRUSH_TOOLS.includes(UI.tool)) {
     if (m.tile < 0) return;
     Net.hold = true;
-    beginAction({ piste: 'Paint piste', unpiste: 'Remove piste', clear: 'Clear trees', plant: 'Plant trees' }[UI.tool]);
+    beginAction({ piste: 'Paint piste', unpiste: 'Remove piste', clear: 'Clear trees', plant: 'Plant trees', freeride: 'Freeride zone' }[UI.tool]);
     UI.drag = { kind: 'paint', last: m.tile };
     applyBrush(m.tile, m.tile);
   } else if (UI.tool === 'route') {
@@ -306,7 +312,8 @@ function onDown(e) {
       if (confirm(`Demolish ${l.name}? You get 40% of its cost back.`)) demolishLift(l.id);
     } else if (t && t.kind === 'building') {
       const b = S.buildings.find(x => x.id === t.id);
-      if (confirm(`Demolish this ${BUILDING_TYPES[b.type].name}? You get 40% of its cost back.`)) demolishBuilding(b.id);
+      const B = BUILDING_TYPES[b.type];
+      if (confirm(B.private ? `Buy out the owners of this ${B.name} for ${money(B.buyout)} and demolish it?` : `Demolish this ${B.name}? You get 40% of its cost back.`)) demolishBuilding(b.id);
     }
   }
 }
@@ -316,25 +323,26 @@ function onMove(e) {
   if (UI.ptrs.has(e.pointerId)) UI.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (UI.pinch && UI.ptrs.size >= 2) {
     const [a, b] = [...UI.ptrs.values()];
-    const p = UI.pinch, d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-    R.cam.zoom = clamp(p.z0 * d / Math.max(10, p.d0), 0.5, 4);
-    R.cam.x = p.world.x - mx / R.cam.zoom;
-    R.cam.y = p.world.y - my / R.cam.zoom;
-    clampCam();
-    UI.camMoved = true;
+    const p = UI.pinch, d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ang = Math.atan2(b.y - a.y, b.x - a.x);
+    panBy(mx - p.mx, my - p.my);
+    zoomAt(mx, my, d / Math.max(10, p.d));
+    let da = ang - p.a;
+    if (da > Math.PI) da -= Math.PI * 2; else if (da < -Math.PI) da += Math.PI * 2;
+    R.cam.yaw += da;
+    Object.assign(p, { d, mx, my, a: ang });
+    UI.camMoved = true; UI.follow = null;
     return;
   }
   updateMouse(e);
   UI.mouse.inside = e.target === R.canvas;
   const d = UI.drag, m = UI.mouse;
-  if (d && d.kind === 'pan') {
+  if (d && (d.kind === 'pan' || d.kind === 'rotate')) {
     if (Math.hypot(m.sx - d.sx, m.sy - d.sy) > 4) d.moved = true;
     if (d.moved) {
-      R.cam.x = d.cx - (m.sx - d.sx) / R.cam.zoom;
-      R.cam.y = d.cy - (m.sy - d.sy) / R.cam.zoom;
-      clampCam();
-      UI.follow = null; UI.camMoved = true;
+      if (d.kind === 'pan') { panBy(m.sx - d.lx, m.sy - d.ly); UI.follow = null; } else rotateBy(m.sx - d.lx, m.sy - d.ly);
+      UI.camMoved = true;
     }
+    d.lx = m.sx; d.ly = m.sy;
   } else if (d && d.kind === 'paint' && m.tile >= 0 && m.tile !== d.last) {
     applyBrush(d.last, m.tile);
     d.last = m.tile;
@@ -346,7 +354,7 @@ function onUp(e) {
   UI.ptrs.delete(e.pointerId);
   if (UI.pinch) { if (UI.ptrs.size < 2) UI.pinch = null; UI.drag = null; return; }
   const d = endDrag();
-  if (d && d.kind === 'pan' && d.click && !d.moved) select(targetAt(UI.mouse.tile, UI.mouse.wx, UI.mouse.wy));
+  if (d && (d.kind === 'pan' || d.kind === 'rotate') && d.click && !d.moved) select(targetAt(UI.mouse.tile, UI.mouse.wx, UI.mouse.wy));
 }
 
 function onKey(e) {
@@ -371,19 +379,26 @@ function onKey(e) {
   else if (k === 'l') selectTool('lifts');
   else if (k === 'b') selectTool('buildings');
   else if (k === 'x') selectTool('demolish');
+  else if (k === 'f') selectTool('freeride');
+  else if (k === 'home') { resetCamera(); UI.camMoved = true; }
   else if (k === '+' || k === '=') zoomAt(innerWidth / 2, innerHeight / 2, 1.2);
   else if (k === '-') zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.2);
 }
 
 function keyboardPan(rdt) {
-  const v = 600 * rdt / R.cam.zoom;
+  const v = 700 * rdt;
   const K = UI.keys;
-  let dx = 0, dy = 0;
-  if (K.has('a') || K.has('arrowleft')) dx -= v;
-  if (K.has('d') || K.has('arrowright')) dx += v;
-  if (K.has('w') || K.has('arrowup')) dy -= v;
-  if (K.has('s') || K.has('arrowdown')) dy += v;
-  if (dx || dy) { R.cam.x += dx; R.cam.y += dy; clampCam(); UI.follow = null; UI.camMoved = true; }
+  let dx = 0, dy = 0, rot = 0, tilt = 0;
+  if (K.has('a') || K.has('arrowleft')) dx += v;
+  if (K.has('d') || K.has('arrowright')) dx -= v;
+  if (K.has('w') || K.has('arrowup')) dy += v;
+  if (K.has('s') || K.has('arrowdown')) dy -= v;
+  if (K.has(',') || K.has('<')) rot -= v;
+  if (K.has('.') || K.has('>')) rot += v;
+  if (K.has('pageup')) tilt += v;
+  if (K.has('pagedown')) tilt -= v;
+  if (dx || dy) { panBy(dx, dy); UI.follow = null; UI.camMoved = true; }
+  if (rot || tilt) { rotateBy(rot, tilt); UI.camMoved = true; }
 }
 
 // ---------- mini-map ----------
@@ -407,7 +422,7 @@ function initMinimap() {
 
 function updateTooltip() {
   const tt = $('#tooltip'), m = UI.mouse;
-  if (!m.inside || m.tile < 0 || UI.drag && UI.drag.kind === 'pan' || UI.ptrs.size > 1) { tt.classList.add('hidden'); return; }
+  if (!m.inside || m.tile < 0 || UI.drag && (UI.drag.kind === 'pan' || UI.drag.kind === 'rotate') || UI.ptrs.size > 1) { tt.classList.add('hidden'); return; }
   const i = m.tile;
   let h = '';
   if (UI.tool === 'lift') {
@@ -437,6 +452,11 @@ function updateTooltip() {
     if (T.village[i]) h = 'Village (no piste needed)';
     else if (!canPiste(i)) h = `<span class="bad">${T.rock[i] || T.diff[i] >= 4 ? 'Too steep / rocky' : 'Occupied'}</span>`;
     else h = `<span style="color:${DIFFS[T.diff[i]].color === '#111111' ? '#ccc' : DIFFS[T.diff[i]].color}">●</span> ${DIFFS[T.diff[i]].name} · ${Math.round(T.grade[i] * 100)}% · ${money(PISTE_COST + (T.tree[i] ? TREE_CLEAR_COST : 0))}`;
+  } else if (UI.tool === 'freeride') {
+    if (UI.freeMode === 'remove') h = T.free[i] ? 'Remove from freeride zone' : '';
+    else if (T.free[i]) h = 'Already in a freeride zone';
+    else if (!canFree(i)) h = `<span class="bad">${T.village[i] ? 'Not in the village' : T.piste[i] ? 'Already a piste' : T.rock[i] || T.diff[i] >= 4 ? 'Too steep / rocky' : 'Occupied'}</span>`;
+    else h = `Off-piste · ${Math.round(T.grade[i] * 100)}%${T.tree[i] ? ' · tree skiing' : ''} · ${money(FREERIDE.cost)}`;
   } else if (UI.tool === 'inspect' || UI.tool === 'demolish') {
     const t = targetAt(i, m.wx, m.wy);
     if (t && t.kind === 'guest') { const g = S.guests.find(x => x.id === t.id); h = `${esc(g.name)} · ${SKILLS[g.skill]} ${GUEST_KINDS[g.kind].toLowerCase()} · 😊 ${pct(g.happy)}`; }
@@ -451,17 +471,21 @@ function updateTooltip() {
   tt.style.top = (m.sy + 14) + 'px';
 }
 
+// Tool previews are drawn flat (world pixels, TILE per tile) on an overlay draped over the terrain.
 function drawToolPreview(ctx) {
   const m = UI.mouse;
   if (UI.tool === 'route' && UI.route.start != null) {
-    ctx.strokeStyle = '#ffd43b'; ctx.lineWidth = 2; ctx.beginPath(); tilePath(ctx, UI.route.start); ctx.stroke();
+    ctx.strokeStyle = '#ffd43b'; ctx.lineWidth = 2.5; ctx.beginPath(); tilePath(ctx, UI.route.start); ctx.stroke();
+  }
+  if (UI.tool === 'lift' && UI.liftStart != null && (!m.inside || m.tile < 0)) {
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); tilePath(ctx, UI.liftStart); ctx.stroke();
   }
   if (!m.inside || m.tile < 0) return;
   const i = m.tile;
   if (BRUSH_TOOLS.includes(UI.tool)) {
     for (const t of brushTiles(i)) {
-      const ok = UI.tool === 'piste' ? canPiste(t) : true;
-      ctx.fillStyle = ok ? (UI.tool === 'piste' ? 'rgba(77,171,247,0.35)' : 'rgba(255,170,60,0.35)') : 'rgba(224,49,49,0.35)';
+      const ok = UI.tool === 'piste' ? canPiste(t) : UI.tool === 'freeride' && UI.freeMode === 'mark' ? canFree(t) || T.free[t] : true;
+      ctx.fillStyle = ok ? (UI.tool === 'piste' ? 'rgba(77,171,247,0.45)' : 'rgba(255,170,60,0.45)') : 'rgba(224,49,49,0.45)';
       ctx.beginPath(); tilePath(ctx, t); ctx.fill();
     }
   } else if (UI.tool === 'route') {
@@ -473,38 +497,40 @@ function drawToolPreview(ctx) {
         ctx.beginPath(); tilePath(ctx, t); ctx.fill();
       }
       ctx.globalAlpha = 1;
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
       ctx.beginPath();
       p.path.forEach((t, k) => { const [x, y] = P(tx(t) + 0.5, ty(t) + 0.5); if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
       ctx.stroke(); ctx.setLineDash([]);
     }
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); tilePath(ctx, i); ctx.stroke();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); tilePath(ctx, i); ctx.stroke();
   } else if (UI.tool === 'lift') {
     if (UI.liftStart == null) {
-      ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.beginPath(); tilePath(ctx, i); ctx.stroke();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); tilePath(ctx, i); ctx.stroke();
     } else {
       const [a, b] = orderedLift(UI.liftStart, i);
       const c = checkLift(UI.liftType, tx(a), ty(a), tx(b), ty(b));
-      drawLiftLine(ctx, { type: UI.liftType, bx: tx(a), by: ty(a), tx: tx(b), ty: ty(b) }, true, c.ok);
+      if (a !== b) previewLift(ctx, { type: UI.liftType, bx: tx(a), by: ty(a), tx: tx(b), ty: ty(b) }, c.ok);
+      else { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.beginPath(); tilePath(ctx, i); ctx.stroke(); }
     }
   } else if (UI.tool === 'building') {
     const o = buildingOrigin(UI.buildType, i);
     const c = checkBuilding(UI.buildType, o.x, o.y);
-    drawBuilding(ctx, { id: 0, type: UI.buildType, x: o.x, y: o.y, size: BUILDING_TYPES[UI.buildType].size }, true, c.ok);
+    previewBuilding(ctx, { id: 0, type: UI.buildType, x: o.x, y: o.y, size: BUILDING_TYPES[UI.buildType].size }, c.ok);
     if (UI.buildType === 'cannon') {
-      ctx.strokeStyle = 'rgba(77,171,247,0.8)'; ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = 'rgba(77,171,247,0.9)'; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
       const [cx, cy] = P(o.x + 0.5, o.y + 0.5);
-      ctx.beginPath(); ctx.ellipse(cx, cy, 3.5 * TILE, 3.5 * TILE * KY, 0, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(cx, cy, 3.5 * TILE, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
     }
   } else if (UI.tool === 'demolish') {
     const t = targetAt(i, m.wx, m.wy);
-    ctx.strokeStyle = '#e03131'; ctx.lineWidth = 2;
+    ctx.strokeStyle = '#e03131'; ctx.lineWidth = 3;
     if (t && t.kind === 'building') {
-      const b = S.buildings.find(x => x.id === t.id), s = b.size * TILE;
-      withAnchor(ctx, b.x * TILE + s / 2, b.y * TILE + s / 2, () => ctx.strokeRect(b.x * TILE, b.y * TILE - 12, s, s + 12));
+      const b = S.buildings.find(x => x.id === t.id), s2 = b.size * TILE;
+      ctx.strokeRect(b.x * TILE, b.y * TILE, s2, s2);
     } else if (t && t.kind === 'lift') {
       const l = S.lifts.find(x => x.id === t.id);
-      for (const [x, y] of [[l.bx, l.by], [l.tx, l.ty]]) withAnchor(ctx, (x + 0.5) * TILE, (y + 0.5) * TILE, () => ctx.strokeRect(x * TILE, y * TILE - 8, TILE, TILE + 8));
+      for (const [x, y] of [[l.bx, l.by], [l.tx, l.ty]]) ctx.strokeRect(x * TILE, y * TILE, TILE, TILE);
+      ctx.beginPath(); ctx.moveTo((l.bx + 0.5) * TILE, (l.by + 0.5) * TILE); ctx.lineTo((l.tx + 0.5) * TILE, (l.ty + 0.5) * TILE); ctx.stroke();
     }
   }
 }
@@ -543,9 +569,11 @@ function renderInfo() {
     if (!g) { Sel.kind = null; el.classList.add('hidden'); return; }
     h = `<h2><span class="dot" style="background:${g.color}"></span>${esc(g.name)}<button class="x" data-action="close-info" aria-label="Close">${CLOSE_SVG}</button></h2>
       <div class="sub">${SKILLS[g.skill]} ${GUEST_KINDS[g.kind].toLowerCase()} · ${(STATE_TEXT[g.state] || (() => g.state))(g)}</div>
+      ${guestChips(g)}
       Happiness ${bar(g.happy, happyColor(g.happy))}
       Energy ${bar(g.energy, '#4dabf7')}
       Hunger ${bar(g.hunger, '#ff922b')}
+      ${g.skill < (g.kind === 'kid' ? 2 : 3) ? `Progress to ${SKILLS[g.skill + 1]} ${bar((g.xp || 0) / SKILL_XP[g.skill] * 100, '#b197fc')}` : ''}
       <table class="kv"><tr><td>Cash</td><td>${money(g.cash)}</td></tr><tr><td>Spent here</td><td>${money(g.spent)}</td></tr>
       <tr><td>Runs today</td><td>${g.runs}</td></tr></table>
       <div class="hint" style="margin:12px 0 4px;text-transform:uppercase;letter-spacing:.08em;font-size:12px;font-weight:600">Thoughts</div>
@@ -594,6 +622,17 @@ function renderInfo() {
     const b = S.buildings.find(x => x.id === Sel.id);
     if (!b) { Sel.kind = null; el.classList.add('hidden'); return; }
     const B = BUILDING_TYPES[b.type];
+    if (B.private) {
+      const L = VILLAGE_LEASE[S.village.lease], occ = clamp(0.25 + S.reputation / 130, 0.2, 1);
+      const lease = Math.round(B.beds * L.perBed * occ * (B.lux ? 1.6 : 1) + (B.shopLease || 0) * L.perBed);
+      el.innerHTML = `<h2>${B.icon} ${B.name}<button class="x" data-action="close-info" aria-label="Close">${CLOSE_SVG}</button></h2>
+        <div class="sub">${B.desc}</div>
+        <div class="chips"><span class="chip">Privately owned</span>${b.built ? `<span class="chip">Built on day ${((b.built - 1) % DAYS_PER_SEASON) + 1}, year ${Math.floor((b.built - 1) / DAYS_PER_SEASON) + 1}</span>` : ''}</div>
+        <table class="kv">${B.beds ? `<tr><td>Beds</td><td>${B.beds}</td></tr>` : ''}<tr><td>Lease paid to you</td><td class="pos">${money(lease)}/night</td></tr></table>
+        <div style="margin-top:12px"><button class="btn danger" data-action="demolish-building" data-id="${b.id}">Buy out & demolish · ${money(B.buyout)}</button></div>`;
+      el.classList.remove('hidden');
+      return;
+    }
     let warn = '';
     if ((B.kind === 'food' || B.kind === 'park') && !T.village[idx(b.x, b.y)] && ![...Net.adj.values()].some(arr => arr.includes(b))) warn = '<div class="warn">Not next to a piste — skiers can\'t reach it.</div>';
     if (B.kind === 'school' && !S.staff.instructor) warn = '<div class="warn">No instructors! Hire them in the Staff panel.</div>';
@@ -608,13 +647,15 @@ function renderInfo() {
       <div style="margin-top:12px"><button class="btn danger" data-action="demolish-building" data-id="${b.id}">Demolish</button></div>`;
   } else if (Sel.kind === 'tile') {
     const i = Sel.tile;
-    h = `<h2>${T.village[i] ? '🏘️ Village' : T.piste[i] ? '⛷️ Piste' : T.tree[i] ? '🌲 Forest' : T.rock[i] ? '🪨 Rocks' : '🏔️ Mountain'}<button class="x" data-action="close-info" aria-label="Close">${CLOSE_SVG}</button></h2>
+    h = `<h2>${T.village[i] ? '🏘️ Village' : T.piste[i] ? '⛷️ Piste' : T.free[i] ? '🏔️ Freeride zone' : T.tree[i] ? '🌲 Forest' : T.rock[i] ? '🪨 Rocks' : '🏔️ Mountain'}<button class="x" data-action="close-info" aria-label="Close">${CLOSE_SVG}</button></h2>
       ${T.closed[i] ? '<div class="warn">🏔️ Closed today: avalanche danger.</div>' : ''}
+      ${T.bare[i] && (T.piste[i] || T.free[i]) ? '<div class="warn">Not enough snow — closed until it snows or a cannon covers it.</div>' : ''}
       <table class="kv">
         <tr><td>Altitude</td><td>${Math.round(T.height[i])} m</td></tr>
         ${T.village[i] ? '' : `<tr><td>Slope</td><td>${Math.round(T.grade[i] * 100)}% (${T.diff[i] < 4 ? DIFFS[T.diff[i]].name : 'too steep'})</td></tr>`}
         <tr><td>Snow depth</td><td>${Math.round(snowAt(i))} cm${T.cannon[i] ? ' (snow cannon)' : ''}</td></tr>
-        ${T.piste[i] ? `<tr><td>Piste condition</td><td>${pct(T.cond[i])}</td></tr><tr><td>Quality</td><td>${pct(pisteQuality(i) * 100)}</td></tr><tr><td>Connected</td><td>${T.reach && T.reach[i] ? 'Yes' : 'No — not reachable from a lift'}</td></tr>` : ''}
+        ${T.free[i] && !T.piste[i] ? `<tr><td>Untracked powder</td><td>${pct(T.fresh[i] * 100)}</td></tr><tr><td>Rated</td><td>${DIFFS[Math.min(3, tileDiff(i))].name} (off-piste)</td></tr><tr><td>Status</td><td>${freeOpen() ? 'Open' : 'Closed'}</td></tr><tr><td>Connected</td><td>${T.reach && T.reach[i] ? 'Yes' : 'No — must touch a lift top or a piste below one'}</td></tr>` : ''}
+        ${T.piste[i] ? `<tr><td>Groomed last night</td><td>${T.groomed[i] ? 'Yes' : T.diff[i] >= 3 && S.grooming.moguls ? 'No — left for moguls' : 'No'}</td></tr><tr><td>Piste condition</td><td>${pct(T.cond[i])}</td></tr><tr><td>Quality</td><td>${pct(pisteQuality(i) * 100)}</td></tr><tr><td>Connected</td><td>${T.reach && T.reach[i] ? 'Yes' : 'No — not reachable from a lift'}</td></tr>` : ''}
       </table>`;
   }
   el.innerHTML = h;
@@ -631,14 +672,16 @@ function togglePanel(p) {
 }
 function closePanel() { UI.panel = null; document.body.classList.remove('has-panel'); renderPanel(true); document.querySelectorAll('#topbar [data-panel]').forEach(b => b.classList.remove('on')); }
 
-const PANEL_TITLES = { finance: 'Finances', guests: 'Guests & rating', lifts: 'Lifts', staff: 'Staff', marketing: 'Marketing', research: 'Research', prices: 'Prices', goals: 'Goals & advisor', menu: 'Game' };
+const PANEL_TITLES = { finance: 'Finances', guests: 'Guests & rating', lifts: 'Lifts', staff: 'Staff', marketing: 'Marketing', research: 'Research', prices: 'Prices', goals: 'Goals & advisor', menu: 'Game',
+  snow: 'Snow & mountain', events: 'Events', village: 'Village' };
 const CLOSE_SVG = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true" style="width:18px;height:18px"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 
 function renderPanel(full) {
   const el = $('#panel');
   if (!UI.panel) { el.classList.add('hidden'); return; }
-  if (!full && (UI.panel === 'prices' || UI.panel === 'menu')) { updatePrices(); return; }
-  const fn = { finance: panelFinance, guests: panelGuests, lifts: panelLifts, staff: panelStaff, marketing: panelMarketing, research: panelResearch, prices: panelPrices, goals: panelGoals, menu: panelMenu }[UI.panel];
+  if (!full && (UI.panel === 'prices' || UI.panel === 'menu' || UI.panel === 'snow')) { updatePrices(); return; }
+  const fn = { finance: panelFinance, guests: panelGuests, lifts: panelLifts, staff: panelStaff, marketing: panelMarketing, research: panelResearch, prices: panelPrices, goals: panelGoals, menu: panelMenu,
+    snow: panelSnow, events: panelEvents, village: panelVillage }[UI.panel];
   const scroll = el.scrollTop;
   el.innerHTML = `<h2>${PANEL_TITLES[UI.panel]}<button class="x" data-action="close-panel" aria-label="Close panel">${CLOSE_SVG}</button></h2>` + fn();
   el.classList.remove('hidden');
@@ -647,8 +690,9 @@ function renderPanel(full) {
   if (UI.panel === 'prices') updatePrices();
 }
 
-const FIN_LABELS = { tickets: 'Lift tickets', food: 'Food & drink', rental: 'Ski rental', school: 'Ski school', hotel: 'Hotel rooms', rewards: 'Goal rewards',
-  construction: 'Construction', upkeep: 'Running costs', staff: 'Staff wages', marketing: 'Marketing', research: 'Research', interest: 'Loan interest' };
+const FIN_LABELS = { tickets: 'Lift tickets', passes: 'Season passes', food: 'Food & drink', rental: 'Ski rental', school: 'Ski school', hotel: 'Hotel rooms',
+  lease: 'Village leases', events: 'Event sponsors', rewards: 'Goal rewards',
+  construction: 'Construction', upkeep: 'Running costs', snow: 'Snow, grooming & avalanche control', staff: 'Staff wages', marketing: 'Marketing & events', research: 'Research', interest: 'Loan interest' };
 
 function finTable(f) {
   let inc = 0, exp = 0, h = '<table class="kv">';
@@ -739,6 +783,7 @@ function panelGuests() {
       <tr><td>Skill mix</td><td>${skills.map((c, k) => `${c} ${SKILLS[k].slice(0, 3)}`).join(' · ')}</td></tr>
       <tr><td>Injuries · breakdowns today</td><td>${S.stats.injuries} · ${S.stats.breakdowns}</td></tr>
       <tr><td>Best day</td><td>${S.stats.bestDay} guests</td></tr></table>
+    <h4>Regulars</h4>${regularsSummary()}
     <h4>What guests are thinking</h4>
     ${th.length ? th.map(([k, c]) => `<div class="thought ${THOUGHTS[k].good ? 'good' : 'bad'}"><b>${c}</b> × ${THOUGHTS[k].text}</div>`).join('') : '<div class="thought">No thoughts yet.</div>'}
     <h4>Guests (least happy first)</h4>
@@ -782,14 +827,14 @@ function panelMarketing() {
     const C = CAMPAIGNS[c.id];
     return `<div class="list-item"><span>${C.icon}</span><span class="grow">${C.name}</span><span style="font-size:12px;color:var(--muted)">${c.delay ? 'starts tomorrow' : `${c.daysLeft} day${c.daysLeft > 1 ? 's' : ''} left`}</span></div>`;
   }).join('') : '<div class="hint" style="margin:0">No campaigns running.</div>');
-  h += `<div class="hint">Visitor demand from marketing: <b>+${pct((S.cache.marketing - 1) * 100)}</b></div><h4>Campaigns & events</h4>`;
+  h += `<div class="hint">Visitor demand from marketing: <b>+${pct((S.cache.marketing - 1) * 100)}</b></div><h4>Campaigns</h4>`;
   for (const [k, C] of Object.entries(CAMPAIGNS)) {
     const why = campaignAvailable(k);
     h += `<div class="card static"><span class="ic">${C.icon}</span><span class="nm">${C.name}</span><span class="pr">${money(C.cost)}</span>
       <span class="ds">${C.desc}${why ? `<br><span style="color:var(--bad)">${why}</span>` : ''}</span>
       <span class="act"><button class="btn ${why ? '' : 'primary'}" data-action="campaign" data-id="${k}" ${why ? 'disabled' : ''}>Launch</button></span></div>`;
   }
-  h += '<h4>Night skiing</h4>';
+  h += '<div class="hint">Races, festivals and contests are booked in the 🚩 Events panel.</div><h4>Night skiing</h4>';
   if (!isUnlocked('upgrade:night')) h += '<div class="hint" style="margin:0">Research <b>Night Skiing</b> 🔬 to install floodlights.</div>';
   else if (!S.night.installed) h += `<div class="hint" style="margin:0 0 6px">Floodlights keep every lift open until 20:00 and bring in evening visitors. Costs ${money(NIGHT_SKIING.cost)} plus ${money(NIGHT_SKIING.upkeep)} per night when switched on.</div>
       <button class="btn primary" data-action="night-install">Install floodlights · ${money(NIGHT_SKIING.cost)}</button>`;
@@ -831,6 +876,8 @@ function panelPrices() {
     ${row('food', '☕ Food (café meal; restaurant ×2.4)', 1, 40)}
     ${row('rental', '🎿 Ski rental', 0, 100)}
     ${row('school', '🧑‍🏫 Ski lesson', 0, 150)}
+    ${row('pass', '🎫 Season pass (kids pay 60%)', 50, 1500)}
+    <div class="hint" id="pass-hint"></div>
     <div class="hint">Guests compare your lift pass with what the resort is worth to them. More lifts, more vertical, more variety and a better rating let you charge more.</div>`;
 }
 
@@ -841,6 +888,11 @@ function updatePrices() {
     const w = S.cache.wtp;
     const share = clamp((w * 1.4 - S.prices.ticket) / (w * 0.7), 0, 1);
     hint.innerHTML = `Typical guest values your resort at <b>${money(w)}</b>. At this price ~<b>${pct(share * 100)}</b> of visitors will buy a pass.`;
+  }
+  const ph = $('#pass-hint');
+  if (ph) {
+    const eq = S.prices.pass / Math.max(1, S.prices.ticket);
+    ph.innerHTML = `Loyal regulars buy passes during the first ${PASS.sellUntil} days of each season ${S.day <= PASS.sellUntil ? '<b>(on sale now)</b>' : `(next sale: season ${S.year + 1})`}. The pass costs as much as <b>${eq.toFixed(1)}</b> day tickets. Pass holders come back more often and still spend on food and lessons. Sold this season: <b>${passHolders()}</b>.`;
   }
 }
 
@@ -864,11 +916,143 @@ function panelMenu() {
     <div class="hint">Scenario: ${scenario().icon} ${scenario().name}</div>
     <h4>Controls</h4>
     <div class="hint" style="margin:0;line-height:1.7">
-      Drag (Inspect tool), right-drag or two fingers: pan · Wheel / pinch: zoom · WASD: pan<br>
+      Drag (Inspect tool), middle-drag or two fingers: pan · Right-drag or Shift+drag: rotate and tilt · Wheel / pinch: zoom<br>
+      WASD: pan · , and .: rotate · Page Up/Down: tilt · Home: reset the camera<br>
       Space: pause · 1–4: speed · Ctrl/⌘+Z: undo · G: slope view · V: cycle views · Esc: cancel<br>
-      Q inspect · P piste · R route · L lifts · B build · X demolish</div>
+      Q inspect · P piste · R route · F freeride · L lifts · B build · X demolish</div>
     <h4>How it works</h4>
     <div class="hint" style="margin:0;line-height:1.6">Guests arrive at the car park, buy a lift pass, ride lifts and ski <b>downhill</b> along pistes to the next lift or back to the village. Each piste tile's colour comes from the slope. Beginners and kids need green runs, experts want red and black, snowboarders love terrain parks and hate drag lifts. Keep queues short, hire staff, feed hungry guests, and grow your rating to attract more visitors.</div>`;
+}
+
+// ---------- snow, events, village ----------
+
+function guestChips(g) {
+  const c = [];
+  if (g.reg) {
+    const r = S.regulars.find(x => x.id === g.reg);
+    c.push(`<span class="chip good">Regular${r ? ` · visit ${r.visits + 1}` : ''}</span>`);
+    if (r && r.pass) c.push('<span class="chip">🎫 Season pass</span>');
+  } else c.push('<span class="chip">First visit</span>');
+  if (g.stay) c.push(`<span class="chip">${g.lux ? '🛎️ Lodge guest' : '🏡 Staying in the village'}</span>`);
+  return `<div class="chips">${c.join('')}</div>`;
+}
+
+function regularsSummary() {
+  const r = S.regulars;
+  if (!r.length) return '<div class="hint" style="margin:0">Guests who leave happy may come back as regulars. Regulars keep their skill, so they slowly get better over the seasons.</div>';
+  const sk = [0, 0, 0, 0]; r.forEach(x => sk[x.skill]++);
+  const loyal = r.reduce((a, x) => a + x.loyalty, 0) / r.length;
+  return `<table class="kv">
+    <tr><td>Regulars on file</td><td>${r.length}</td></tr>
+    <tr><td>Season pass holders</td><td>${passHolders()}</td></tr>
+    <tr><td>Regulars here today</td><td>${S.stats.regularsToday} (${S.stats.passVisits} on a pass)</td></tr>
+    <tr><td>Average loyalty</td><td>${pct(loyal)}</td></tr>
+    <tr><td>Skill mix of regulars</td><td>${sk.map((c, k) => `${c} ${SKILLS[k].slice(0, 3)}`).join(' · ')}</td></tr>
+    <tr><td>Guests who levelled up today</td><td>${S.stats.levelUps || 0}</td></tr></table>
+    <div class="hint" style="margin:4px 0 0">As regulars improve they want harder runs — keep adding reds, blacks and freeride terrain.</div>`;
+}
+
+function panelSnow() {
+  const rep = snowReport(), st = S.snowStats, w = WEATHER[S.weather.type];
+  const cannons = countB('cannon'), garages = countB('groomer'), cap = groomCapacity();
+  const sm = S.snowmaking.mode;
+  const free = freerideTiles(), lv = S.avy.level;
+  let freeTrack = 0;
+  let freeCut = 0;
+  if (free) {
+    let s2 = 0;
+    for (let i = 0; i < T.free.length; i++) if (T.free[i]) { s2 += T.fresh[i]; if (freeOpen() && !T.bare[i] && !(T.reach && T.reach[i])) freeCut++; }
+    freeTrack = s2 / free;
+  }
+  const toggle = (on, action, label) => `<div class="row"><label>${label}</label><button class="btn ${on ? 'on' : ''}" data-action="${action}">${on ? 'On' : 'Off'}</button></div>`;
+  return `<h4 style="margin-top:0">Snow report</h4>
+    <div class="tiles">
+      <div class="tile"><span class="l">Piste base</span><span class="v">${Math.round(rep.avg)} cm</span><span class="s">${w.icon} ${w.name}${S.weather.fresh ? ` · +${S.weather.fresh} cm new` : ''}</span></div>
+      <div class="tile"><span class="l">Bare · thin</span><span class="v ${rep.bare ? 'neg' : ''}">${rep.bare} · ${rep.thin}</span><span class="s">of ${rep.n} piste tiles</span></div>
+    </div>
+    <div class="hint" style="margin:6px 0 0">Snow melts faster low down and late in the season, and busy pistes get scraped thin. Pistes under ${SNOW.bareBelow} cm close.</div>
+
+    <h4>Snowmaking</h4>
+    ${cannons ? `<div class="brush">${Object.entries(SNOW.modes).map(([k, n]) => `<button class="${sm === k ? 'on' : ''}" data-action="snowmode" data-id="${k}">${n}</button>`).join('')}</div>
+      ${sm === 'auto' ? `<div class="row" style="margin-top:8px"><label>Top pistes up to</label><b id="snow-target">${S.snowmaking.target} cm</b></div>
+        <input type="range" min="20" max="140" step="5" value="${S.snowmaking.target}" data-snowtarget="1">` : ''}
+      <table class="kv"><tr><td>Snow cannons</td><td>${cannons} covering ${coveredPisteTiles()} piste tiles</td></tr>
+      <tr><td>Made last night</td><td>${st.tooWarm ? '<span class="neg">Too warm to make snow</span>' : `${fmtNum(st.made)} cm · ${money(st.cost)}`}</td></tr>
+      <tr><td>Cost</td><td>${Math.round(SNOW.costPerCm * 100)}¢ per tile per cm</td></tr></table>`
+      : `<div class="hint" style="margin:0">${isUnlocked('building:cannon') ? 'Build ❄️ Snow Cannons next to pistes that melt out.' : 'Research <b>Snow Cannons</b> 🔬 to make your own snow.'}</div>`}
+
+    <h4>Grooming</h4>
+    ${garages ? `<table class="kv"><tr><td>Snowcats</td><td>${garages} · groom up to ${fmtNum(cap)} tiles a night</td></tr>
+      <tr><td>Last night</td><td>${fmtNum(st.groomed)} groomed${st.ungroomed ? ` · <span class="neg">${fmtNum(st.ungroomed)} missed</span>` : ''}</td></tr>
+      <tr><td>Fuel</td><td>$${SNOW.groomCost.toFixed(2)} per tile</td></tr></table>
+      ${toggle(S.grooming.moguls, 'moguls', 'Leave black runs ungroomed (moguls for experts)')}`
+      : `<div class="hint" style="margin:0">${isUnlocked('building:groomer') ? 'Build a 🚜 Groomer Garage. Without snowcats, pistes only recover a little each night.' : 'Research the <b>Groomer Garage</b> 🔬. Until then, pistes only recover a little each night.'}</div>`}
+
+    <h4>Freeride & avalanches</h4>
+    ${free ? `<div class="tiles">
+        <div class="tile"><span class="l">Freeride zone</span><span class="v">${free}</span><span class="s">tiles · ${pct(freeTrack * 100)} untracked${freeCut ? ` · <span class="neg">${freeCut} unreachable</span>` : ''}</span></div>
+        <div class="tile"><span class="l">Avalanche danger</span><span class="v" style="color:${AVY_COLORS[lv]}">${lv} / 5</span><span class="s">${AVY_LEVELS[lv]}${S.freeride.closedToday ? ' · zones closed' : ''}</span></div>
+      </div>
+      ${toggle(S.freeride.open, 'free-open', 'Freeride zones open')}
+      ${toggle(S.freeride.control, 'free-control', `Avalanche control (blasting from danger 3, ${money(FREERIDE.blastCost)}/tile)`)}
+      <div class="row"><label>Close zones automatically at danger</label></div>
+      <div class="brush">${[[0, 'Never'], [4, '4 High'], [5, '5 Very high']].map(([k, n]) => `<button class="${S.freeride.autoClose === k ? 'on' : ''}" data-action="free-autoclose" data-id="${k}">${n}</button>`).join('')}</div>
+      <div class="hint">Danger climbs after big snowfalls, storms and warm spells. Blasting and enough ⛑️ ski patrol (1 per ${FREERIDE.patrolPer} zone tiles, on top of the lifts) make slides rare. A slide injures anyone caught and costs rating.</div>`
+      : `<div class="hint" style="margin:0 0 6px">Mark ungroomed off-piste terrain with the Freeride tool. Advanced and expert skiers pay to ride fresh powder, and big zones unlock the Freeride Tour event.</div>
+      <button class="btn" data-action="tool" data-id="freeride">Open the Freeride tool</button>`}`;
+}
+
+function panelEvents() {
+  let h = '';
+  const ev = S.event;
+  if (ev) {
+    const E = EVENTS[ev.id];
+    const days = eventDaysAway();
+    h += `<div class="card static on"><span class="ic">${E.icon}</span><span class="nm">${E.name}</span>
+      <span class="pr">${ev.live ? 'Today!' : `In ${days} day${days === 1 ? '' : 's'}`}</span>
+      <span class="ds">${ev.live ? `Day ${E.days - ev.left + 1} of ${E.days}. It succeeds if guests leave at least 62% happy on average.` : 'Keep meeting the requirements or the event is cancelled.'}
+      ${eventReqs(ev.id).map(r => `<br><span style="color:${r.ok ? 'var(--good)' : 'var(--bad)'}">${r.ok ? '✓' : '✗'} ${r.text}</span>`).join('')}</span></div>`;
+  } else h += '<div class="hint" style="margin:0 0 8px">Book an event a few days ahead. It brings crowds; if they leave happy you gain rating and sponsorship. One event at a time.</div>';
+  h += '<h4>Book an event</h4>';
+  for (const [k, E] of Object.entries(EVENTS)) {
+    const why = eventAvailable(k);
+    const reqs = eventReqs(k);
+    h += `<div class="card static"><span class="ic">${E.icon}</span><span class="nm">${E.name}</span><span class="pr">${money(E.cost)}</span>
+      <span class="ds">${E.desc}<br>${E.days > 1 ? `${E.days} days · ` : ''}+${pct(E.demand * 100)} visitors · ${E.prep} day${E.prep > 1 ? 's' : ''} to prepare${E.sponsor ? ` · sponsor ${money(E.sponsor)}` : ''} · rating +${E.rep[0]} / −${E.rep[1]}
+      ${reqs.map(r => `<br><span style="color:${r.ok ? 'var(--good)' : 'var(--muted)'}">${r.ok ? '✓' : '○'} ${r.text}</span>`).join('')}
+      ${why && why !== 'Requirements not met' ? `<br><span style="color:var(--bad)">${why}</span>` : ''}${S.eventWins[k] ? `<br>🏅 Held successfully ${S.eventWins[k]}×` : ''}</span>
+      <span class="act"><button class="btn ${why ? '' : 'primary'}" data-action="event-book" data-id="${k}" ${why ? 'disabled' : ''}>Book</button></span></div>`;
+  }
+  if (S.eventLog.length) {
+    h += '<h4>Past events</h4>' + S.eventLog.map(e => `<div class="list-item"><span>${EVENTS[e.id].icon}</span><span class="grow">${EVENTS[e.id].name}</span>
+      <span style="font-size:12px;color:${e.ok ? 'var(--good)' : 'var(--bad)'}">Y${e.year} D${e.day} · ${e.score}% · ${e.ok ? 'success' : 'flop'}</span></div>`).join('');
+  }
+  return h;
+}
+
+function panelVillage() {
+  const pb = privateBuildings();
+  const counts = {};
+  pb.forEach(b => counts[b.type] = (counts[b.type] || 0) + 1);
+  const last = S.fin.history[S.fin.history.length - 1];
+  const chance = growthChance(last ? last.guests : 0);
+  const types = Object.entries(BUILDING_TYPES).filter(([, B]) => B.private);
+  return `<div class="hint" style="margin:0 0 8px">Private developers build chalets, shops and apartments in the village when your resort is busy and well rated. You don't pay for them — they pay you a lease every night, and their guests ski with you.</div>
+    <div class="tiles">
+      <div class="tile"><span class="l">Beds</span><span class="v">${fmtNum(villageBeds())}</span><span class="s">${pb.length} private building${pb.length === 1 ? '' : 's'}</span></div>
+      <div class="tile"><span class="l">Lease income</span><span class="v pos">${money(S.village.lastLease)}</span><span class="s">last night</span></div>
+    </div>
+    <h4>Lease rate</h4>
+    <div class="brush">${Object.entries(VILLAGE_LEASE).map(([k, L]) => `<button class="${S.village.lease === k ? 'on' : ''}" data-action="lease" data-id="${k}">${L.name} · ${money(L.perBed)}/bed</button>`).join('')}</div>
+    <div class="hint">A low lease attracts developers faster; a high one earns more per bed but the village grows slowly.</div>
+    <table class="kv">
+      <tr><td>Chance of a new building tonight</td><td>${pct(chance * 100)}</td></tr>
+      ${S.cache.value < 30 ? '<tr><td colspan="2" class="hint">Developers want more lifts, runs and facilities before they invest.</td></tr>' : ''}
+      ${S.village.full ? '<tr><td colspan="2" class="neg">No free village space left for developers</td></tr>' : ''}</table>
+    <h4>What developers build</h4>
+    ${types.map(([k, B]) => `<div class="list-item"><span>${B.icon}</span><span class="grow">${B.name}${B.beds ? ` · ${B.beds} beds` : ''}</span>
+      <span style="font-size:12px;color:${S.reputation >= B.minRep ? 'var(--muted)' : 'var(--bad)'}">${counts[k] || 0} built · needs ${B.minRep}% rating${B.minGuests ? `, ${B.minGuests} guests/day` : ''}</span></div>`).join('')}
+    <div class="hint">Developers keep lift stations and the entrance road clear. Use Demolish to buy a building out if it is in your way.</div>`;
 }
 
 // ---------- actions ----------
@@ -899,6 +1083,15 @@ function onAction(e) {
     case 'pick-guest': { const g = S.guests.find(x => x.id === +id); if (g) { select({ kind: 'guest', id: g.id }); centerCamOn(guestPos(g).x * TILE, guestPos(g).y * TILE); } break; }
     case 'pick-lift': { const l = S.lifts.find(x => x.id === +id); select({ kind: 'lift', id: l.id }); centerCamOn((l.bx + l.tx + 1) / 2 * TILE, (l.by + l.ty + 1) / 2 * TILE); break; }
     case 'staff': hireStaff(id, +el.dataset.d); renderPanel(true); break;
+    case 'freemode': UI.freeMode = id; renderSubmenu(); break;
+    case 'snowmode': S.snowmaking.mode = id; renderPanel(true); break;
+    case 'moguls': S.grooming.moguls = !S.grooming.moguls; renderPanel(true); break;
+    case 'free-open': setFreerideOpen(!S.freeride.open); renderPanel(true); break;
+    case 'free-control': S.freeride.control = !S.freeride.control; renderPanel(true); break;
+    case 'free-autoclose': S.freeride.autoClose = +id; renderPanel(true); break;
+    case 'event-book': scheduleEvent(id); renderPanel(true); break;
+    case 'lease': S.village.lease = id; renderPanel(true); break;
+    case 'tool': selectTool(id); break;
     case 'campaign': launchCampaign(id); renderPanel(true); break;
     case 'night-install': installNightSkiing(); renderPanel(true); break;
     case 'night-toggle': toggleNightSkiing(); renderPanel(true); break;
@@ -928,6 +1121,7 @@ function onAction(e) {
 function onInput(e) {
   const k = e.target.dataset.price;
   if (k && S) { S.prices[k] = +e.target.value; updatePrices(); }
+  if (e.target.dataset.snowtarget && S) { S.snowmaking.target = +e.target.value; const v = $('#snow-target'); if (v) v.textContent = S.snowmaking.target + ' cm'; }
 }
 
 function afterLoad() {
@@ -935,8 +1129,7 @@ function afterLoad() {
   UI.follow = null;
   Undo.stack = [];
   const l = S.lifts[0];
-  R.cam.zoom = innerWidth < 700 ? 1.2 : 1.6;
-  if (l) centerCamOn((l.bx + 0.5) * TILE, (l.by - 4) * TILE); else centerCamOn(ENTRANCE.x * TILE, (MAP_H - 10) * TILE);
+  if (l) resetCamera(l.bx + 0.5, l.by - 6); else resetCamera(ENTRANCE.x, MAP_H - 12);
   UI.camMoved = false;
   setView('none');
   renderSubmenu();
@@ -948,7 +1141,7 @@ function afterLoad() {
 // ---------- tutorial ----------
 
 const TUTORIAL = [
-  { text: 'Welcome to your valley! <b>Drag</b> the map to look around (two fingers on a touch screen) and <b>scroll or pinch</b> to zoom.', check: () => UI.camMoved },
+  { text: 'Welcome to your valley! <b>Drag</b> to move around, <b>right-drag</b> to turn and tilt the view, and <b>scroll</b> to zoom. On a touch screen: drag with two fingers, twist to turn, pinch to zoom.', check: () => UI.camMoved },
   { text: 'Open <b>🗺️ Views</b> in the toolbar and pick <b>Slope difficulty</b> (or press <b>G</b>). Green is gentle, black is steep, purple is too steep to ski.', check: () => R.view === 'slope' },
   { text: 'Select <b>🛣️ Route</b>. Click a spot high up the mountain, then click in the village below. A whole piste is painted along the gentlest line.', check: b => pisteCount() >= b.pistes + 8 },
   { text: 'Now a lift: <b>🚡 Lifts → Rope Tow</b>. Click in the village at the bottom of your new run, then click up the slope near the top of it.', check: b => S.lifts.length > b.lifts },
@@ -1022,7 +1215,9 @@ function refreshTopbar() {
   const open = liftsOpen() ? (isNightSession() ? ' <small>night</small>' : '') : S.minute < OPEN_TIME ? ' <small>opening</small>' : ' <small>closed</small>';
   setStat('#st-date', `Year ${S.year} · Day ${S.day}/${DAYS_PER_SEASON}`, clockStr(S.minute) + open);
   const w = WEATHER[S.weather.type];
-  setStat('#st-weather', w.name, `${Math.round(S.weather.snow)} cm${S.weather.fresh ? ` <small>+${S.weather.fresh}</small>` : ''}`);
+  const sr = snowReport();
+  const avy = freerideTiles() && S.avy.level >= 3 ? ` · Avalanche ${S.avy.level}/5` : '';
+  setStat('#st-weather', w.name + avy, `${Math.round(sr.n ? sr.avg : S.weather.snow)} cm${S.weather.fresh ? ` <small>+${S.weather.fresh}</small>` : ''}${sr.bare ? ` <small class="neg">${sr.bare} bare</small>` : ''}`);
   setStat('#st-guests', null, `${S.guests.length} · ${S.stats.guestsToday}`);
   const d = S.reputation - S.stats.repStart;
   setStat('#st-rating', null, `${pct(S.reputation)}${Math.abs(d) < 0.05 ? '' : ` <small class="${d >= 0 ? 'pos' : 'neg'}">${d > 0 ? '▲' : '▼'} ${Math.abs(d).toFixed(1)}</small>`}`);
@@ -1046,7 +1241,7 @@ function refreshUI() {
   refreshTopbar();
   if (Sel.kind) renderInfo();
   if (UI.panel && !UI.drag) renderPanel(false);
-  if (!$('#minimap-wrap').classList.contains('collapsed') && R.terrain && R.overlay) drawMinimap($('#minimap'));
+  if (!$('#minimap-wrap').classList.contains('collapsed') && R.base) drawMinimap($('#minimap'));
   checkTutorial();
 }
 

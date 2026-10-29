@@ -36,6 +36,9 @@
       <button data-panel="lifts" title="Lifts" aria-label="Lifts"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5l18 4"/><path d="M12 7v5"/><rect x="8" y="12" width="8" height="7" rx="1.5"/></svg></button>
       <button data-panel="staff" title="Staff" aria-label="Staff"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 14a8 8 0 0 1 16 0"/><path d="M2 14h20v2H2z"/><path d="M12 6V4"/></svg></button>
       <button data-panel="marketing" title="Marketing" aria-label="Marketing"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1z"/><path d="M15 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg></button>
+      <button data-panel="snow" title="Snow, grooming and freeride" aria-label="Snow, grooming and freeride"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7"/><path d="M9 4l3 2 3-2M9 20l3-2 3 2"/></svg></button>
+      <button data-panel="events" title="Events" aria-label="Events"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4"/><path d="M5 4h11l-2 4 2 4H5"/></svg></button>
+      <button data-panel="village" title="Village" aria-label="Village"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 20h20"/><path d="M4 20v-8l5-4 5 4v8"/><path d="M14 20v-6l3-3 3 3v6"/><path d="M8 20v-4h2v4"/></svg></button>
       <button data-panel="research" title="Research" aria-label="Research"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6L4.5 18.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3"/><path d="M7 15h10"/></svg></button>
       <button data-panel="prices" title="Prices" aria-label="Prices"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v3a2 2 0 0 0 0 4v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-3a2 2 0 0 0 0-4z"/><path d="M14 6v12" stroke-dasharray="2 2"/></svg></button>
       <button data-panel="goals" title="Goals and advisor" aria-label="Goals and advisor"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5"/></svg></button>
@@ -53,6 +56,7 @@
     <button data-tool="piste" title="Paint pistes (P)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3c4 3-4 6 0 9s-4 6 0 9"/><path d="M15 3c4 3-4 6 0 9s-4 6 0 9"/></svg><small>Piste</small></button>
     <button data-tool="route" title="Auto-route a piste (R)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="19" r="2"/><path d="M8 5h6a3 3 0 0 1 0 6h-4a3 3 0 0 0 0 6h6"/></svg><small>Route</small></button>
     <button data-tool="unpiste" title="Remove pistes"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20H9l-5-5a2 2 0 0 1 0-2.8l8.2-8.2a2 2 0 0 1 2.8 0l5 5a2 2 0 0 1 0 2.8L13 19"/><path d="M8 9l7 7"/></svg><small>Unpiste</small></button>
+    <button data-tool="freeride" title="Freeride zones (F)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20l6-11 4 6 2-3 6 8z"/><path d="M8 20c2-3 4-3 5-6" stroke-dasharray="2 2"/></svg><small>Freeride</small></button>
     <button data-tool="lifts" title="Build lifts (L)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5l18 4"/><path d="M12 7v5"/><rect x="8" y="12" width="8" height="7" rx="1.5"/></svg><small>Lifts</small></button>
     <button data-tool="buildings" title="Build facilities (B)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></svg><small>Build</small></button>
     <button data-tool="clear" title="Clear trees"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4l6 6-3 3-6-6z"/><path d="M11 7L3 15l3 3 8-8"/><path d="M6 18l-2 2"/></svg><small>Clear</small></button>
@@ -75,9 +79,11 @@
   <div id="toasts"></div>
   <div id="modal" class="hidden"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
   <script src="js/data.js"></script>
   <script src="js/terrain.js"></script>
   <script src="js/sim.js"></script>
+  <script src="js/resort.js"></script>
   <script src="js/render.js"></script>
   <script src="js/ui.js"></script>
   <script src="js/main.js"></script>
