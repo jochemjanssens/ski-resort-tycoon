@@ -889,9 +889,14 @@ function updateSun() {
   g.fillStyle = gr; g.fillRect(0, 0, 2, 256);
   R.skyTex.needsUpdate = true;
   R.scene.fog.color.setRGB(low[0] / 255, low[1] / 255, low[2] / 255).convertSRGBToLinear();
-  const w = S.weather.type;
-  R.scene.fog.near = w === 'storm' ? 25 : w === 'snow' ? 45 : 80;
-  R.scene.fog.far = w === 'storm' ? 90 : w === 'snow' ? 150 : 230;
+}
+
+// Fog starts beyond the area you are looking at, so it only softens the distance and never hides the map.
+function updateFog() {
+  const w = S.weather.type, d = R.cam.dist;
+  const extra = w === 'storm' ? 25 : w === 'snow' ? 60 : 120;
+  R.scene.fog.near = d + extra;
+  R.scene.fog.far = d + extra + (w === 'storm' ? 110 : w === 'snow' ? 200 : 320);
 }
 
 // ---------- camera ----------
@@ -1054,6 +1059,7 @@ function render() {
   updateSnowcats();
   updateSnowfall(dt);
   updateSun();
+  updateFog();
   R.bunting.visible = !!eventLive();
   if (R.bunting.visible) R.flags.forEach((f, k) => { f.rotation.x = Math.sin(now / 400 + k) * 0.35; });
   // the selected building glows
