@@ -6,7 +6,7 @@ const UI = {
   route: { start: null, maxDiff: 0, key: '', plan: null },
   mouse: { sx: 0, sy: 0, wx: 0, wy: 0, tile: -1, inside: false },
   drag: null, keys: new Set(), ptrs: new Map(), pinch: null, camMoved: false,
-  startScenario: 'alpine', startTutorial: true, freeMode: 'mark',
+  startScenario: 'alpine', startTutorial: true, freeMode: 'mark', villageMode: 'path',
 };
 const $ = s => document.querySelector(s);
 const money = fmt$;
@@ -14,7 +14,7 @@ const pct = n => Math.round(n) + '%';
 const fmtNum = n => Math.round(n).toLocaleString('en-US');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const clockStr = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.floor(m % 60)).padStart(2, '0')}`;
-const BRUSH_TOOLS = ['piste', 'unpiste', 'clear', 'plant', 'freeride'];
+const BRUSH_TOOLS = ['piste', 'unpiste', 'clear', 'plant', 'freeride', 'village'];
 
 function initUI() {
   const cv = R.canvas;
@@ -84,6 +84,7 @@ function viewLegend() {
     condition: heat('Perfect', 'Icy / thin') + '<p class="hint">Snowcats groom the busiest pistes each night. Snow cannons top up thin snow. Settings are in the ❄️ Snow panel.</p>',
     snow: '<div class="legend"><span><i style="background:rgba(150,90,40,.7)"></i>Bare</span><span><i style="background:rgba(200,120,60,.6)"></i>Under 30 cm</span><span><i style="background:rgba(40,110,230,.35)"></i>Good</span><span><i style="background:rgba(40,110,230,.7)"></i>Deep</span></div>',
     traffic: heat('Quiet', 'Busy') + '<p class="hint">Where skiers have been today. Busy pistes wear out faster.</p>',
+    value: heat('Prime', 'Basic') + '<p class="hint">What a plot is worth to developers: close to a lift or piste, near the square, with a view. Prime plots pay more lease and upgrade sooner.</p>',
     queues: heat('Short', 'Long') + '<p class="hint">Each lift shows its current wait and queue length.</p>',
   }[R.view];
 }
@@ -121,6 +122,12 @@ function renderSubmenu() {
       <div class="hint" style="margin:6px 4px">Width</div>
       <div class="brush">${[1, 2, 3].map(n => `<button class="${UI.brush === n ? 'on' : ''}" data-action="brush" data-id="${n}">${n} tile${n > 1 ? 's' : ''}</button>`).join('')}</div>
       <p class="hint">Click a high point, then a lower point (a lift station or the village). The piste follows the gentlest line downhill. Right-click to cancel.</p>`;
+  } else if (UI.tool === 'village') {
+    const modes = [['path', '🛤️', 'Street', `${money(PATH_COST)}/tile`], ...Object.entries(ZONES).map(([z, Z]) => [z, Z.icon, `${Z.name} zone`, `${money(ZONE_COST)}/tile`]), ['remove', '✖️', 'Remove', 'free']];
+    h += `<h3>Village</h3>
+      ${modes.map(([k, ic, n, c]) => `<button class="card slim ${String(UI.villageMode) === k ? 'on' : ''}" data-action="villagemode" data-id="${k}"><span class="ic">${ic}</span><span class="nm">${n} <small style="color:var(--muted);font-weight:500">· ${c}</small></span></button>`).join('')}
+      <div class="brush" style="margin-top:6px">${[1, 2, 3].map(n => `<button class="${UI.brush === n ? 'on' : ''}" data-action="brush" data-id="${n}">${n}×${n}</button>`).join('')}</div>
+      <p class="hint">Zone land and draw streets; developers build on zoned plots that face a street. The village can spread ${VILLAGE_SPREAD} rows up gentle slopes, and a hamlet can grow within ${HAMLET_RANGE} tiles of any lift station. Tip: the 💎 Plot value view shows the best spots.</p>`;
   } else if (UI.tool === 'freeride') {
     h += `<h3>Freeride zones · ${money(FREERIDE.cost)}/tile</h3>
       <div class="brush">${[['mark', 'Mark zone'], ['remove', 'Remove']].map(([k, n]) => `<button class="${UI.freeMode === k ? 'on' : ''}" data-action="freemode" data-id="${k}">${n}</button>`).join('')}</div>
@@ -173,6 +180,7 @@ function applyBrush(from, to) {
   else if (UI.tool === 'clear') changed = clearTrees(tiles);
   else if (UI.tool === 'plant') changed = plantTrees(tiles);
   else if (UI.tool === 'freeride') changed = UI.freeMode === 'mark' ? paintFree(tiles) : removeFree(tiles);
+  else if (UI.tool === 'village') changed = paintVillage(tiles, UI.villageMode);
   if (changed) R.overlayDirty = true;
 }
 
@@ -272,7 +280,7 @@ function onDown(e) {
   } else if (BRUSH_TOOLS.includes(UI.tool)) {
     if (m.tile < 0) return;
     Net.hold = true;
-    beginAction({ piste: 'Paint piste', unpiste: 'Remove piste', clear: 'Clear trees', plant: 'Plant trees', freeride: 'Freeride zone' }[UI.tool]);
+    beginAction({ piste: 'Paint piste', unpiste: 'Remove piste', clear: 'Clear trees', plant: 'Plant trees', freeride: 'Freeride zone', village: 'Village' }[UI.tool]);
     UI.drag = { kind: 'paint', last: m.tile };
     applyBrush(m.tile, m.tile);
   } else if (UI.tool === 'route') {
@@ -380,6 +388,7 @@ function onKey(e) {
   else if (k === 'b') selectTool('buildings');
   else if (k === 'x') selectTool('demolish');
   else if (k === 'f') selectTool('freeride');
+  else if (k === 'z') selectTool('village');
   else if (k === 'home') { resetCamera(); UI.camMoved = true; }
   else if (k === '+' || k === '=') zoomAt(innerWidth / 2, innerHeight / 2, 1.2);
   else if (k === '-') zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.2);
@@ -452,6 +461,11 @@ function updateTooltip() {
     if (T.village[i]) h = 'Village (no piste needed)';
     else if (!canPiste(i)) h = `<span class="bad">${T.rock[i] || T.diff[i] >= 4 ? 'Too steep / rocky' : 'Occupied'}</span>`;
     else h = `<span style="color:${DIFFS[T.diff[i]].color === '#111111' ? '#ccc' : DIFFS[T.diff[i]].color}">●</span> ${DIFFS[T.diff[i]].name} · ${Math.round(T.grade[i] * 100)}% · ${money(PISTE_COST + (T.tree[i] ? TREE_CLEAR_COST : 0))}`;
+  } else if (UI.tool === 'village') {
+    const mode = UI.villageMode, v = isVillageLand(i) || expandable(i) ? ` · plot value <b>${plotValue(i).toFixed(2)}</b>` : '';
+    if (mode === 'remove') h = T.zone[i] || T.path[i] ? 'Remove zone / street' : '';
+    else if (mode === 'path') h = canPath(i) ? `Street · ${money(PATH_COST)}${v}` : `<span class="bad">${T.piste[i] ? 'A piste is here' : T.occ[i] ? 'Occupied' : 'Too steep / rocky'}</span>`;
+    else h = canZone(i) ? `${ZONES[mode].name} zone${v}` : `<span class="bad">${T.occ[i] ? 'Occupied' : T.piste[i] ? 'A piste is here' : 'Too steep, or too far from the village and lift stations'}</span>`;
   } else if (UI.tool === 'freeride') {
     if (UI.freeMode === 'remove') h = T.free[i] ? 'Remove from freeride zone' : '';
     else if (T.free[i]) h = 'Already in a freeride zone';
@@ -484,8 +498,11 @@ function drawToolPreview(ctx) {
   const i = m.tile;
   if (BRUSH_TOOLS.includes(UI.tool)) {
     for (const t of brushTiles(i)) {
-      const ok = UI.tool === 'piste' ? canPiste(t) : UI.tool === 'freeride' && UI.freeMode === 'mark' ? canFree(t) || T.free[t] : true;
-      ctx.fillStyle = ok ? (UI.tool === 'piste' ? 'rgba(77,171,247,0.45)' : 'rgba(255,170,60,0.45)') : 'rgba(224,49,49,0.45)';
+      const vm = UI.villageMode, zoning = UI.tool === 'village' && vm !== 'remove' && vm !== 'path';
+      const ok = UI.tool === 'piste' ? canPiste(t) : UI.tool === 'freeride' && UI.freeMode === 'mark' ? canFree(t) || T.free[t]
+        : UI.tool === 'village' && vm !== 'remove' ? (vm === 'path' ? canPath(t) || T.path[t] : canZone(t)) : true;
+      const col = zoning ? ZONES[vm].color + '99' : UI.tool === 'piste' ? 'rgba(77,171,247,0.45)' : 'rgba(255,170,60,0.45)';
+      ctx.fillStyle = ok ? col : 'rgba(224,49,49,0.45)';
       ctx.beginPath(); tilePath(ctx, t); ctx.fill();
     }
   } else if (UI.tool === 'route') {
@@ -623,13 +640,22 @@ function renderInfo() {
     if (!b) { Sel.kind = null; el.classList.add('hidden'); return; }
     const B = BUILDING_TYPES[b.type];
     if (B.private) {
-      const L = VILLAGE_LEASE[S.village.lease], occ = clamp(0.25 + S.reputation / 130, 0.2, 1);
-      const lease = Math.round(B.beds * L.perBed * occ * (B.lux ? 1.6 : 1) + (B.shopLease || 0) * L.perBed);
-      el.innerHTML = `<h2>${B.icon} ${B.name}<button class="x" data-action="close-info" aria-label="Close">${CLOSE_SVG}</button></h2>
+      const L = VILLAGE_LEASE[S.village.lease], val = buildingValue(b), lv = levelOf(b), G = plotGrid(), i0 = idx(b.x, b.y);
+      const guests = stayCounts().get(b.id) || 0;
+      const lease = Math.round(B.kind === 'lodging' ? guests * L.perBed * val * (B.lux ? 1.6 : 1) : (B.shopLease || 0) * L.perBed * val * LEVEL_MULT[lv]);
+      const factors = [G.dl[i0] <= 3 || G.dp[i0] <= 1 ? '⛷️ Ski-in, ski-out' : G.dl[i0] <= 9 ? 'Near a lift' : 'Far from the lifts',
+        G.ds[i0] <= 7 ? '⛲ Near the square' : '', frontage(b.x, b.y, b.size) ? '🛤️ On a street' : 'No street', T.height[i0] - BASE_ALT > 120 ? '🏔️ Mountain view' : ''].filter(Boolean);
+      el.innerHTML = `<h2>${B.icon} ${esc(levelName(b))}<button class="x" data-action="close-info" aria-label="Close">${CLOSE_SVG}</button></h2>
         <div class="sub">${B.desc}</div>
-        <div class="chips"><span class="chip">Privately owned</span>${b.built ? `<span class="chip">Built on day ${((b.built - 1) % DAYS_PER_SEASON) + 1}, year ${Math.floor((b.built - 1) / DAYS_PER_SEASON) + 1}</span>` : ''}</div>
-        <table class="kv">${B.beds ? `<tr><td>Beds</td><td>${B.beds}</td></tr>` : ''}<tr><td>Lease paid to you</td><td class="pos">${money(lease)}/night</td></tr></table>
-        <div style="margin-top:12px"><button class="btn danger" data-action="demolish-building" data-id="${b.id}">Buy out & demolish · ${money(B.buyout)}</button></div>`;
+        <div class="chips"><span class="chip">Privately owned</span><span class="chip">${'★'.repeat(lv)}${'☆'.repeat(3 - lv)} level ${lv}</span>${b.built ? `<span class="chip">Built day ${((b.built - 1) % DAYS_PER_SEASON) + 1}, year ${Math.floor((b.built - 1) / DAYS_PER_SEASON) + 1}</span>` : ''}</div>
+        <div class="tiles">
+          <div class="tile"><span class="l">Plot value</span><span class="v">${val.toFixed(2)}</span><span class="s">${factors.join(' · ')}</span></div>
+          <div class="tile"><span class="l">${B.kind === 'lodging' ? 'Guests tonight' : B.kind === 'garage' ? 'Spaces' : 'Visitors today'}</span><span class="v">${B.kind === 'lodging' ? `${guests} / ${bedsOf(b)}` : B.kind === 'garage' ? Math.round(B.spaces * LEVEL_MULT[lv]) : b.dayVisits || 0}</span><span class="s">${B.kind === 'lodging' ? 'occupied beds' : B.kind === 'garage' ? 'for day visitors' : `${b.visits} in total`}</span></div>
+        </div>
+        <table class="kv"><tr><td>Lease paid to you</td><td class="pos">${money(lease)}/night</td></tr>
+          ${B.kind === 'shop' || B.kind === 'evening' ? `<tr><td>Your cut of sales</td><td>${B.kind === 'shop' ? 15 : 30}%</td></tr>` : ''}
+          ${lv < 3 ? `<tr><td>Next level</td><td>${B.levels[lv]} — needs a busy building, plot value ${(1.05 + 0.25 * lv).toFixed(2)}+ and a ${40 + 12 * lv}% rating</td></tr>` : ''}</table>
+        <div style="margin-top:12px"><button class="btn danger" data-action="demolish-building" data-id="${b.id}">Buy out & demolish · ${money(Math.round(B.buyout * LEVEL_MULT[lv]))}</button></div>`;
       el.classList.remove('hidden');
       return;
     }
@@ -654,6 +680,7 @@ function renderInfo() {
         <tr><td>Altitude</td><td>${Math.round(T.height[i])} m</td></tr>
         ${T.village[i] ? '' : `<tr><td>Slope</td><td>${Math.round(T.grade[i] * 100)}% (${T.diff[i] < 4 ? DIFFS[T.diff[i]].name : 'too steep'})</td></tr>`}
         <tr><td>Snow depth</td><td>${Math.round(snowAt(i))} cm${T.cannon[i] ? ' (snow cannon)' : ''}</td></tr>
+        ${T.zone[i] || T.path[i] || isVillageLand(i) || expandable(i) ? `<tr><td>Village</td><td>${T.path[i] ? 'Street' : T.zone[i] ? ZONES[T.zone[i]].name + ' zone' : 'Not zoned'} · plot value ${plotValue(i).toFixed(2)}</td></tr>` : ''}
         ${T.free[i] && !T.piste[i] ? `<tr><td>Untracked powder</td><td>${pct(T.fresh[i] * 100)}</td></tr><tr><td>Rated</td><td>${DIFFS[Math.min(3, tileDiff(i))].name} (off-piste)</td></tr><tr><td>Status</td><td>${freeOpen() ? 'Open' : 'Closed'}</td></tr><tr><td>Connected</td><td>${T.reach && T.reach[i] ? 'Yes' : 'No — must touch a lift top or a piste below one'}</td></tr>` : ''}
         ${T.piste[i] ? `<tr><td>Groomed last night</td><td>${T.groomed[i] ? 'Yes' : T.diff[i] >= 3 && S.grooming.moguls ? 'No — left for moguls' : 'No'}</td></tr><tr><td>Piste condition</td><td>${pct(T.cond[i])}</td></tr><tr><td>Quality</td><td>${pct(pisteQuality(i) * 100)}</td></tr><tr><td>Connected</td><td>${T.reach && T.reach[i] ? 'Yes' : 'No — not reachable from a lift'}</td></tr>` : ''}
       </table>`;
@@ -919,7 +946,7 @@ function panelMenu() {
       Drag (Inspect tool), middle-drag or two fingers: pan · Right-drag or Shift+drag: rotate and tilt · Wheel / pinch: zoom<br>
       WASD: pan · , and .: rotate · Page Up/Down: tilt · Home: reset the camera<br>
       Space: pause · 1–4: speed · Ctrl/⌘+Z: undo · G: slope view · V: cycle views · Esc: cancel<br>
-      Q inspect · P piste · R route · F freeride · L lifts · B build · X demolish</div>
+      Q inspect · P piste · R route · F freeride · Z village · L lifts · B build · X demolish</div>
     <h4>How it works</h4>
     <div class="hint" style="margin:0;line-height:1.6">Guests arrive at the car park, buy a lift pass, ride lifts and ski <b>downhill</b> along pistes to the next lift or back to the village. Each piste tile's colour comes from the slope. Beginners and kids need green runs, experts want red and black, snowboarders love terrain parks and hate drag lifts. Keep queues short, hire staff, feed hungry guests, and grow your rating to attract more visitors.</div>`;
 }
@@ -933,7 +960,11 @@ function guestChips(g) {
     c.push(`<span class="chip good">Regular${r ? ` · visit ${r.visits + 1}` : ''}</span>`);
     if (r && r.pass) c.push('<span class="chip">🎫 Season pass</span>');
   } else c.push('<span class="chip">First visit</span>');
-  if (g.stay) c.push(`<span class="chip">${g.lux ? '🛎️ Lodge guest' : '🏡 Staying in the village'}</span>`);
+  const st = g.stayId && findStay(g.stayId);
+  if (st) {
+    const home = S.buildings.find(b => b.id === st.b);
+    c.push(`<span class="chip">${g.lux ? '🛎️' : '🏡'} Staying at ${home ? esc(levelName(home)) : 'the village'} · ${st.nights > 1 ? `${st.nights - 1} more night${st.nights > 2 ? 's' : ''}` : 'last day'}</span>`);
+  }
   return `<div class="chips">${c.join('')}</div>`;
 }
 
@@ -1031,28 +1062,36 @@ function panelEvents() {
 }
 
 function panelVillage() {
-  const pb = privateBuildings();
-  const counts = {};
-  pb.forEach(b => counts[b.type] = (counts[b.type] || 0) + 1);
-  const last = S.fin.history[S.fin.history.length - 1];
-  const chance = growthChance(last ? last.guests : 0);
-  const types = Object.entries(BUILDING_TYPES).filter(([, B]) => B.private);
-  return `<div class="hint" style="margin:0 0 8px">Private developers build chalets, shops and apartments in the village when your resort is busy and well rated. You don't pay for them — they pay you a lease every night, and their guests ski with you.</div>
+  const pb = privateBuildings(), counts = stayCounts();
+  const beds = villageBeds(), guests = S.stays.length;
+  const dem = zoneDemand(), ch = growthChance();
+  const meter = v => `<div class="bar" style="margin:3px 0 0"><div style="width:${clamp(v / 1.5 * 100, 3, 100)}%;background:var(--accent)"></div></div>`;
+  const status = { nozone: '<span class="neg">no land zoned</span>', nostreet: '<span class="neg">zoned plots need a street alongside</span>', full: '<span class="neg">zone is full</span>' };
+  const zoneRow = ([z, Z]) => {
+    const n = zoneTiles(+z), built = pb.filter(b => BUILDING_TYPES[b.type].zone === +z);
+    const types = Z.types.map(k => {
+      const B = BUILDING_TYPES[k];
+      return `${B.icon} ${B.name} <span style="color:${S.reputation >= B.minRep ? 'var(--muted)' : 'var(--bad)'}">(${B.minRep}%${B.minGuests ? `, ${B.minGuests} guests` : ''})</span>`;
+    }).join(' · ');
+    return `<div class="staff-row"><div class="staff-ic">${Z.icon}</div><div class="grow"><b>${Z.name}</b> · ${n} tiles · ${built.length} building${built.length === 1 ? '' : 's'}
+      <div class="hint" style="margin:2px 0">Demand ${pct(Math.min(1.5, dem[z]) / 1.5 * 100)} · ${pct(ch[z] * 100)} chance of a new building tonight · ${status[S.village.status[z]] || 'room to grow'}</div>${meter(dem[z])}
+      <div class="hint" style="margin:4px 0 0">${types}</div></div></div>`;
+  };
+  const best = pb.slice().sort((a, b) => buildingValue(b) - buildingValue(a)).slice(0, 8);
+  return `<div class="hint" style="margin:0 0 8px">Zone land and draw streets with the 🏘️ Village tool. Private developers build on zoned plots that face a street, busy buildings on valuable plots grow a level, and their guests stay for several days.</div>
+    <div class="row" style="margin-bottom:8px"><button class="btn primary" data-action="tool" data-id="village">Open the Village tool</button><button class="btn" data-action="view" data-id="value">💎 Plot value view</button></div>
     <div class="tiles">
-      <div class="tile"><span class="l">Beds</span><span class="v">${fmtNum(villageBeds())}</span><span class="s">${pb.length} private building${pb.length === 1 ? '' : 's'}</span></div>
-      <div class="tile"><span class="l">Lease income</span><span class="v pos">${money(S.village.lastLease)}</span><span class="s">last night</span></div>
+      <div class="tile"><span class="l">Staying tonight</span><span class="v">${guests} / ${beds}</span><span class="s">${beds ? pct(guests / beds * 100) : '—'} of beds occupied</span></div>
+      <div class="tile"><span class="l">Lease income</span><span class="v pos">${money(S.village.lastLease)}</span><span class="s">last night · ${pb.length} private buildings</span></div>
     </div>
+    <div class="hint" style="margin:6px 0 0">Village charm ${pct(villageAppeal() * 100)} — streets, a square and evening venues make overnight guests happier and fill more beds.${countB('square') ? '' : ' Build a ⛲ Village Square.'}</div>
+    ${S.cache.value < 30 ? '<div class="warn" style="margin-top:8px">Developers are waiting for a bigger resort: build more lifts, runs and facilities before they invest in lodging.</div>' : ''}
+    <h4>Zones</h4>${Object.entries(ZONES).map(zoneRow).join('')}
     <h4>Lease rate</h4>
     <div class="brush">${Object.entries(VILLAGE_LEASE).map(([k, L]) => `<button class="${S.village.lease === k ? 'on' : ''}" data-action="lease" data-id="${k}">${L.name} · ${money(L.perBed)}/bed</button>`).join('')}</div>
     <div class="hint">A low lease attracts developers faster; a high one earns more per bed but the village grows slowly.</div>
-    <table class="kv">
-      <tr><td>Chance of a new building tonight</td><td>${pct(chance * 100)}</td></tr>
-      ${S.cache.value < 30 ? '<tr><td colspan="2" class="hint">Developers want more lifts, runs and facilities before they invest.</td></tr>' : ''}
-      ${S.village.full ? '<tr><td colspan="2" class="neg">No free village space left for developers</td></tr>' : ''}</table>
-    <h4>What developers build</h4>
-    ${types.map(([k, B]) => `<div class="list-item"><span>${B.icon}</span><span class="grow">${B.name}${B.beds ? ` · ${B.beds} beds` : ''}</span>
-      <span style="font-size:12px;color:${S.reputation >= B.minRep ? 'var(--muted)' : 'var(--bad)'}">${counts[k] || 0} built · needs ${B.minRep}% rating${B.minGuests ? `, ${B.minGuests} guests/day` : ''}</span></div>`).join('')}
-    <div class="hint">Developers keep lift stations and the entrance road clear. Use Demolish to buy a building out if it is in your way.</div>`;
+    ${best.length ? `<h4>Most valuable buildings</h4>${best.map(b => `<div class="list-item" data-action="pick-building" data-id="${b.id}"><span>${BUILDING_TYPES[b.type].icon}</span><span class="grow">${esc(levelName(b))} ${'★'.repeat(levelOf(b))}</span>
+      <span style="font-size:12px;color:var(--muted)">value ${buildingValue(b).toFixed(2)}${BUILDING_TYPES[b.type].kind === 'lodging' ? ` · ${counts.get(b.id) || 0}/${bedsOf(b)} beds` : ''}</span></div>`).join('')}` : ''}`;
 }
 
 // ---------- actions ----------
@@ -1081,9 +1120,11 @@ function onAction(e) {
     case 'demolish-lift': { const l = S.lifts.find(x => x.id === +id); if (confirm(`Demolish ${l.name}?`)) { demolishLift(l.id); select(null); } break; }
     case 'demolish-building': if (confirm('Demolish this building?')) { demolishBuilding(+id); select(null); } break;
     case 'pick-guest': { const g = S.guests.find(x => x.id === +id); if (g) { select({ kind: 'guest', id: g.id }); centerCamOn(guestPos(g).x * TILE, guestPos(g).y * TILE); } break; }
+    case 'pick-building': { const b = S.buildings.find(x => x.id === +id); if (b) { select({ kind: 'building', id: b.id }); centerCamOn((b.x + b.size / 2) * TILE, (b.y + b.size / 2) * TILE); } break; }
     case 'pick-lift': { const l = S.lifts.find(x => x.id === +id); select({ kind: 'lift', id: l.id }); centerCamOn((l.bx + l.tx + 1) / 2 * TILE, (l.by + l.ty + 1) / 2 * TILE); break; }
     case 'staff': hireStaff(id, +el.dataset.d); renderPanel(true); break;
     case 'freemode': UI.freeMode = id; renderSubmenu(); break;
+    case 'villagemode': UI.villageMode = id === 'path' || id === 'remove' ? id : +id; renderSubmenu(); break;
     case 'snowmode': S.snowmaking.mode = id; renderPanel(true); break;
     case 'moguls': S.grooming.moguls = !S.grooming.moguls; renderPanel(true); break;
     case 'free-open': setFreerideOpen(!S.freeride.open); renderPanel(true); break;

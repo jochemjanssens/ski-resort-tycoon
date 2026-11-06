@@ -19,6 +19,7 @@ const VIEWS = {
   snow: { name: 'Snow depth', icon: '❄️' },
   traffic: { name: 'Skier traffic', icon: '🔥' },
   queues: { name: 'Lift queues', icon: '⏱️' },
+  value: { name: 'Plot value', icon: '💎' },
 };
 
 const XY = 1.4;    // vertical exaggeration
@@ -238,6 +239,29 @@ function paintBase() {
       if (edge(X, Y + 1)) c.fillRect(x + k, y + Q - 2, 2.5, 2);
     }
   }
+  // Zoned land that is still empty, and streets with cobbles
+  for (let i = 0; i < MAP_W * MAP_H; i++) {
+    const z = T.zone[i];
+    if (!z && !T.path[i]) continue;
+    const x = tx(i) * Q, y = ty(i) * Q;
+    if (T.path[i]) {
+      c.fillStyle = '#b7bec8'; c.fillRect(x, y, Q, Q);
+      for (let k = 0; k < 7; k++) {
+        c.fillStyle = k % 2 ? 'rgba(120,128,140,0.55)' : 'rgba(225,230,236,0.6)';
+        c.fillRect(x + hash(i, k + 20) * (Q - 4), y + hash(i, k + 30) * (Q - 4), 3 + hash(i, k) * 2, 2.5);
+      }
+      const X = tx(i), Y = ty(i), snowEdge = (nx, ny) => inMap(nx, ny) && !T.path[idx(nx, ny)];
+      c.fillStyle = 'rgba(255,255,255,0.75)';
+      if (snowEdge(X - 1, Y)) c.fillRect(x, y, 2, Q);
+      if (snowEdge(X + 1, Y)) c.fillRect(x + Q - 2, y, 2, Q);
+      if (snowEdge(X, Y - 1)) c.fillRect(x, y, Q, 2);
+      if (snowEdge(X, Y + 1)) c.fillRect(x, y + Q - 2, Q, 2);
+    } else if (T.occ[i] === 0) {
+      c.fillStyle = ZONES[z].color; c.globalAlpha = 0.2; c.fillRect(x, y, Q, Q); c.globalAlpha = 0.55;
+      for (let k = 0; k < Q; k += 6) { c.fillRect(x + k, y, 3, 1.5); c.fillRect(x, y + k, 1.5, 3); }
+      c.globalAlpha = 1;
+    }
+  }
   // Village edge, road and entrance drive
   c.fillStyle = 'rgba(120,135,160,0.35)'; c.fillRect(0, VILLAGE_Y * Q, MAP_W * Q, 2);
   c.fillStyle = '#4b515c'; c.fillRect(0, (MAP_H - 1) * Q + 3, MAP_W * Q, Q - 6);
@@ -275,6 +299,8 @@ function paintViewLayer() {
       if (T.cannon[i]) { c.fillStyle = 'rgba(255,255,255,0.6)'; c.fillRect(x + OPX / 2 - 1.5, y + OPX / 2 - 1.5, 3, 3); }
     } else if (R.view === 'traffic' && T.traffic[i] > 0) {
       c.fillStyle = heatColor(Math.sqrt(T.traffic[i] / maxT), 0.7); c.fillRect(x, y, OPX, OPX);
+    } else if (R.view === 'value' && (isVillageLand(i) || expandable(i))) {
+      c.fillStyle = heatColor(1 - clamp((plotValue(i) - 0.9) / 1.2, 0, 1), 0.6); c.fillRect(x, y, OPX, OPX);
     }
   }
   R.viewAt = performance.now();
@@ -322,7 +348,7 @@ function redrawOverlay(now) {
     for (let i = 0; i < MAP_W * MAP_H; i++) if (T.piste[i] && !T.village[i] && T.reach && T.reach[i]) c.fillRect(tx(i) * OPX, ty(i) * OPX, OPX, OPX);
   }
   if (R.view === 'slope') c.drawImage(R.slopeLayer, 0, 0);
-  else if (R.view === 'condition' || R.view === 'snow' || R.view === 'traffic') {
+  else if (R.view === 'condition' || R.view === 'snow' || R.view === 'traffic' || R.view === 'value') {
     if (now - R.viewAt > 800 || R.viewFor !== R.view) paintViewLayer();
     c.drawImage(R.viewLayer, 0, 0);
   }
@@ -517,12 +543,13 @@ function emojiTexture(e) {
 }
 
 function syncBuildings() {
-  const sig = S.buildings.map(b => `${b.id}:${b.type}:${b.x},${b.y}`).join('|');
+  const sig = S.buildings.map(b => `${b.id}:${b.type}:${b.x},${b.y}:${b.level || 1}`).join('|');
   if (sig === R.bldSig) return;
   R.bldSig = sig;
   for (const c of R.bldGroup.children.slice()) R.bldGroup.remove(c);
   R.bldViz = new Map();
   R.windowMats = [];
+  R.chimneys = [];
   for (const b of S.buildings) {
     const grp = makeBuilding(b);
     R.bldGroup.add(grp);
@@ -569,31 +596,197 @@ function makeBuilding(b, ghostMat) {
     const head = add(new THREE.CylinderGeometry(0.16, 0.12, 0.4, 10), std(B.color), 0.1, plinth + 1.1 * OBJ, 0);
     head.rotation.z = -1.1;
     top = plinth + 1.3 * OBJ;
-  } else {
-    const hgt = (s === 2 ? 0.95 : 0.65) * OBJ;
-    add(new THREE.BoxGeometry(s * 0.8, hgt, s * 0.8), std(B.color), 0, plinth + hgt / 2, 0);
-    add(gableGeometry(s * 0.92, s * 0.92, hgt * 0.55), std(0xf4f7fb, { roughness: 0.7, side: THREE.DoubleSide }), 0, plinth + hgt, 0);
+  } else if (b.type === 'square') {
+    top = buildSquare(g, add, std, ghostMat);
+  } else if (b.type === 'garage') {
+    const lv = levelOf(b), deck = 0.32;
+    for (let k = 0; k < lv; k++) add(new THREE.BoxGeometry(s * 0.92, 0.06, s * 0.92), std(0x9aa0a8), 0, 0.03 + k * deck, 0, k > 0);
+    for (let k = 1; k < lv; k++) for (const [px, pz] of [[-0.8, -0.8], [0.8, -0.8], [-0.8, 0.8], [0.8, 0.8]]) add(new THREE.BoxGeometry(0.08, deck, 0.08), std(0x7b8088), px, k * deck - deck / 2, pz);
     if (!ghostMat) {
-      const win = new THREE.MeshStandardMaterial({ color: 0x2a3a52, emissive: 0xffc773, emissiveIntensity: 0, roughness: 0.3 });
-      win.userData.window = true;
-      R.windowMats.push(win);
-      const nw = Math.max(2, s * 3);
-      for (let k = 0; k < nw; k++) for (const side of [1, -1]) {
-        const w = new THREE.Mesh(new THREE.PlaneGeometry(0.1, 0.13), win);
-        w.position.set(-s * 0.3 + k * (s * 0.6 / (nw - 1)), plinth + hgt * 0.55, side * (s * 0.4 + 0.003));
-        if (side < 0) w.rotation.y = Math.PI;
-        g.add(w);
+      const cols = [0xc53030, 0x2b6cb0, 0xe2e8f0, 0x38a169, 0xd69e2e, 0x1a202c];
+      for (let f = 0; f < lv; f++) for (let k = 0; k < 8; k++) if (hash(b.id * 3 + f, k) < 0.75) {
+        add(new THREE.BoxGeometry(0.22, 0.13, 0.42), std(cols[Math.floor(hash(b.id + f, k + 7) * 6)], { roughness: 0.35 }), -0.72 + (k % 4) * 0.48, 0.12 + f * deck, k < 4 ? -0.45 : 0.45);
       }
-      if (b.type === 'groomer') { const cat = makeSnowcat(); cat.position.set(s * 0.6, 0, 0.1); cat.rotation.y = Math.PI / 2; g.add(cat); }
     }
-    top = plinth + hgt * 1.55;
+    top = lv * deck + 0.2;
+  } else {
+    top = buildHouse(g, add, std, b, B, plinth, ghostMat);
   }
-  if (!ghostMat) {
+  if (!ghostMat && B.kind !== 'lodging') {
     const icon = new THREE.Sprite(new THREE.SpriteMaterial({ map: emojiTexture(B.icon), depthWrite: false }));
     icon.scale.set(0.7, 0.7, 0.7); icon.position.set(0, top + 0.45, 0);
     g.add(icon);
   }
   return g;
+}
+
+// Alpine house: a stone ground floor, timber storeys with balconies on the gable end, a steep snowy roof and a chimney.
+const WOODS = [0x8b5a2b, 0x6e4426, 0xa0673a, 0x7a4b2a, 0x5e3b22];
+function buildHouse(g, add, std, b, B, plinth, ghostMat) {
+  const s = b.size, lv = B.private ? levelOf(b) : 1, h = k => hash(b.id || 1, k);
+  const w = s * (s === 2 ? 0.86 : 0.74), d = s * (s === 2 ? 0.8 : 0.7);
+  const tall = { apartments: 1, lodge: 1, hotel: 2 }[b.type] || 0;
+  const floors = Math.min(5, (s === 2 ? 2 : 1) + lv - 1 + tall);
+  const stoneH = 0.36, floorH = 0.34;
+  const timber = B.private || b.type === 'cafe' || b.type === 'restaurant' || b.type === 'hotel';
+  const wood = timber ? WOODS[Math.floor(h(1) * WOODS.length)] : new THREE.Color(B.color).getHex();
+  const shopfront = B.kind === 'shop' || B.kind === 'evening' || b.type === 'rental' || b.type === 'cafe';
+  add(new THREE.BoxGeometry(w, stoneH, d), std(shopfront ? 0xd9d4cc : 0x9b958c), 0, plinth + stoneH / 2, 0);
+  let y = plinth + stoneH;
+  for (let f = 0; f < floors; f++) {
+    add(new THREE.BoxGeometry(w * 0.98, floorH, d * 0.98), std(f === 0 && B.lux ? 0xc9b79c : wood), 0, y + floorH / 2, 0);
+    if (!ghostMat && (f < floors - 1 || floors === 1)) {
+      // balcony along the south gable
+      add(new THREE.BoxGeometry(w * 0.9, 0.035, 0.16), std(0x5b3a24), 0, y + 0.02, d / 2 + 0.08, false);
+      add(new THREE.BoxGeometry(w * 0.9, 0.1, 0.02), std(0x4a2e1c), 0, y + 0.09, d / 2 + 0.16, false);
+    }
+    y += floorH;
+  }
+  // steep roof: the ridge runs north–south so the gable faces the valley
+  const roofH = Math.max(0.45, w * 0.55);
+  add(gableGeometry(d * 1.24, w * 1.22, roofH), std(0x3d2a1e, { side: THREE.DoubleSide }), 0, y - 0.02, 0).rotation.y = Math.PI / 2;
+  add(gableGeometry(d * 1.2, w * 1.18, roofH * 0.98), std(0xf4f7fb, { roughness: 0.7, side: THREE.DoubleSide }), 0, y + 0.015, 0).rotation.y = Math.PI / 2;
+  if (ghostMat) return y + roofH;
+  // windows on both long faces, lit in the evening
+  const win = new THREE.MeshStandardMaterial({ color: 0x2a3a52, emissive: B.lux ? 0xffd27a : 0xffc773, emissiveIntensity: 0, roughness: 0.3 });
+  win.userData.window = true;
+  R.windowMats.push(win);
+  const glass = shopfront ? new THREE.MeshStandardMaterial({ color: 0x9fc3e6, emissive: 0xfff0c8, emissiveIntensity: 0, roughness: 0.15 }) : null;
+  if (glass) { glass.userData.window = true; R.windowMats.push(glass); }
+  const per = Math.max(2, Math.round(w / 0.28));
+  for (let f = 0; f <= floors; f++) {
+    const wy = plinth + (f === 0 ? stoneH * 0.5 : stoneH + (f - 0.5) * floorH);
+    if (f === 0 && glass) {
+      for (const side of [1, -1]) {
+        const m = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.8, stoneH * 0.6), glass);
+        m.position.set(0, wy, side * (d / 2 + 0.004)); if (side < 0) m.rotation.y = Math.PI; g.add(m);
+      }
+      add(new THREE.BoxGeometry(w * 0.9, 0.03, 0.22), std(new THREE.Color(B.color).getHex()), 0, plinth + stoneH + 0.01, d / 2 + 0.11, false).rotation.x = 0.35;
+      continue;
+    }
+    for (let k = 0; k < per; k++) for (const side of [1, -1]) {
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.09, f === 0 ? 0.12 : 0.15), win);
+      m.position.set(-w * 0.38 + k * (w * 0.76 / (per - 1)), wy, side * (d / 2 + 0.004));
+      if (side < 0) m.rotation.y = Math.PI;
+      g.add(m);
+    }
+  }
+  // chimney with smoke
+  const cx = (h(2) - 0.5) * w * 0.4, cz = -d * 0.2;
+  add(new THREE.BoxGeometry(0.09, roofH * 0.7, 0.09), std(0x8f8a84), cx, y + roofH * 0.55, cz);
+  R.chimneys.push(new THREE.Vector3(g.position.x + cx, g.position.y + y + roofH * 0.95, g.position.z + cz));
+  if (b.type === 'groomer') { const cat = makeSnowcat(); cat.position.set(s * 0.6, 0, 0.1); cat.rotation.y = Math.PI / 2; g.add(cat); }
+  if (B.kind === 'evening') {
+    // a terrace with parasols
+    for (let k = 0; k < 2; k++) {
+      const px = (k - 0.5) * w * 0.6;
+      add(new THREE.CylinderGeometry(0.01, 0.01, 0.34, 4), std(0x444444), px, plinth + 0.17, d / 2 + 0.32, false);
+      add(new THREE.ConeGeometry(0.16, 0.08, 8), std(k ? 0xd94f2b : 0xf2c14e), px, plinth + 0.36, d / 2 + 0.32);
+    }
+  }
+  return y + roofH;
+}
+
+// The village square: paving, a frozen fountain, the ticket office and a clock tower.
+function buildSquare(g, add, std, ghostMat) {
+  add(new THREE.BoxGeometry(1.95, 0.06, 1.95), std(0xc7cbd1), 0, 0.03, 0, false);
+  add(new THREE.CylinderGeometry(0.32, 0.36, 0.14, 16), std(0x9b958c), -0.35, 0.1, 0.3);
+  add(new THREE.CylinderGeometry(0.26, 0.26, 0.02, 16), std(0xcfe6f7, { roughness: 0.2 }), -0.35, 0.17, 0.3, false);
+  add(new THREE.CylinderGeometry(0.04, 0.05, 0.3, 8), std(0x9b958c), -0.35, 0.3, 0.3);
+  add(new THREE.BoxGeometry(0.34, 1.5, 0.34), std(0xe8e1d4), 0.5, 0.75, -0.45);
+  add(new THREE.BoxGeometry(0.38, 0.3, 0.38), std(0x8b5a2b), 0.5, 1.6, -0.45);
+  add(new THREE.ConeGeometry(0.3, 0.7, 4), std(0x3f6e5a), 0.5, 2.1, -0.45).rotation.y = Math.PI / 4;
+  if (!ghostMat) {
+    const face = new THREE.Mesh(new THREE.CircleGeometry(0.09, 16), new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff0c8, emissiveIntensity: 0 }));
+    face.material.userData.window = true; R.windowMats.push(face.material);
+    face.position.set(0.5, 1.6, -0.45 + 0.192); g.add(face);
+  }
+  add(new THREE.BoxGeometry(0.6, 0.38, 0.4), std(0x8b5a2b), -0.45, 0.19, -0.55);
+  add(gableGeometry(0.72, 0.52, 0.25), std(0xf4f7fb, { side: THREE.DoubleSide }), -0.45, 0.38, -0.55);
+  return 2.4;
+}
+
+// Street lamps along paths and a few spruces between buildings; rebuilt when streets, zones or buildings change.
+function syncVillageDecor() {
+  let sig = 0;
+  for (let i = 0; i < T.path.length; i++) if (T.path[i] || T.zone[i]) sig = (sig * 31 + i * 7 + T.path[i] * 3 + T.zone[i]) | 0;
+  sig += ':' + S.buildings.length;
+  if (sig === R.decorSig) return;
+  R.decorSig = sig;
+  const MAX = 1200;
+  if (!R.lamps) {
+    const pole = new THREE.CylinderGeometry(0.02, 0.03, 0.9, 5); pole.translate(0, 0.45, 0);
+    const head = new THREE.BoxGeometry(0.09, 0.11, 0.09); head.translate(0, 0.93, 0);
+    R.lamps = new THREE.InstancedMesh(pole, new THREE.MeshStandardMaterial({ color: 0x2b2f36, roughness: 0.5 }), MAX);
+    R.lampMat = new THREE.MeshStandardMaterial({ color: 0xfff3d6, emissive: 0xffc56b, emissiveIntensity: 0 });
+    R.lampHeads = new THREE.InstancedMesh(head, R.lampMat, MAX);
+    R.lamps.castShadow = true;
+    const gl = document.createElement('canvas'); gl.width = gl.height = 64;
+    const x = gl.getContext('2d'), gr = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,214,140,0.9)'); gr.addColorStop(1, 'rgba(255,214,140,0)');
+    x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
+    R.glow = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ map: new THREE.CanvasTexture(gl), size: 1.6, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+    R.glow.frustumCulled = false;
+    const spruce = new THREE.ConeGeometry(0.22, 0.8, 7); spruce.translate(0, 0.45, 0);
+    R.spruces = new THREE.InstancedMesh(spruce, new THREE.MeshStandardMaterial({ color: 0x2f5d45, roughness: 0.9 }), MAX);
+    R.spruces.castShadow = true;
+    R.scene.add(R.lamps, R.lampHeads, R.glow, R.spruces);
+    R.smoke = [];
+  }
+  const m4 = new THREE.Matrix4(), glow = [];
+  let n = 0, t = 0;
+  for (let i = 0; i < T.path.length && n < MAX; i++) {
+    if (!T.path[i] || (tx(i) + ty(i)) % 3 !== 0) continue;
+    const x = tx(i) + 0.15, y = ty(i) + 0.15, e = elev(x, y);
+    m4.makeTranslation(x, e, y); R.lamps.setMatrixAt(n, m4); R.lampHeads.setMatrixAt(n, m4); n++;
+    glow.push(x, e + 0.95, y);
+  }
+  R.lamps.count = R.lampHeads.count = n;
+  R.lamps.instanceMatrix.needsUpdate = R.lampHeads.instanceMatrix.needsUpdate = true;
+  R.glow.geometry.setAttribute('position', new THREE.Float32BufferAttribute(glow, 3));
+  for (let i = 0; i < T.village.length && t < MAX; i++) {
+    if (!T.village[i] || T.path[i] || T.occ[i] || T.zone[i] || ty(i) >= MAP_H - 2 || hash(i, 11) > 0.12) continue;
+    const X = tx(i), Y = ty(i);
+    if (Math.abs(X - ENTRANCE.x) < 2) continue;
+    const x = X + 0.3 + hash(i, 12) * 0.4, y = Y + 0.3 + hash(i, 13) * 0.4, sc = 0.8 + hash(i, 14) * 0.5;
+    m4.makeScale(sc, sc, sc).setPosition(x, elev(x, y), y);
+    R.spruces.setMatrixAt(t++, m4);
+  }
+  R.spruces.count = t; R.spruces.instanceMatrix.needsUpdate = true;
+}
+
+const smokeTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 32;
+  const x = c.getContext('2d'), g = x.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, 'rgba(235,238,242,0.9)'); g.addColorStop(1, 'rgba(235,238,242,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(c);
+})();
+
+// Lamps glow after dusk; three puffs of smoke drift from each chimney.
+function updateVillage(now) {
+  syncVillageDecor();
+  const m = S.minute;
+  const lit = Math.max(clamp((m - 16 * 60 - 10) / 50, 0, 1), clamp((8 * 60 + 20 - m) / 30, 0, 1));
+  R.lampMat.emissiveIntensity = 0.2 + lit * 2.5;
+  R.glow.material.opacity = lit * 0.8;
+  R.glow.visible = lit > 0.02;
+  const want = (R.chimneys || []).length * 3;
+  while (R.smoke.length < want) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, depthWrite: false, transparent: true }));
+    R.scene.add(sp); R.smoke.push(sp);
+  }
+  const wind = S.weather.type === 'storm' ? 1.6 : 0.5;
+  R.smoke.forEach((sp, k) => {
+    const c = R.chimneys && R.chimneys[Math.floor(k / 3)];
+    sp.visible = !!c;
+    if (!c) return;
+    const t = ((now / 4000) + (k % 3) / 3 + hash(k, 1)) % 1;
+    sp.position.set(c.x + t * wind, c.y + t * 1.1, c.z - t * 0.2);
+    const s2 = 0.18 + t * 0.5;
+    sp.scale.set(s2, s2, 1);
+    sp.material.opacity = (1 - t) * 0.55;
+  });
 }
 
 function makeSnowcat() {
@@ -1052,7 +1245,7 @@ function render() {
   syncBuildings();
   applyCamera();
   const key = overlayKey();
-  const viewStale = (R.view === 'condition' || R.view === 'snow' || R.view === 'traffic') && now - R.viewAt > 800;
+  const viewStale = (R.view === 'condition' || R.view === 'snow' || R.view === 'traffic' || R.view === 'value') && now - R.viewAt > 800;
   if (key !== R.ovKey || viewStale) { R.ovKey = key; redrawOverlay(now); }
   updateLifts(dt);
   updateGuests();
@@ -1060,6 +1253,7 @@ function render() {
   updateSnowfall(dt);
   updateSun();
   updateFog();
+  updateVillage(now);
   R.bunting.visible = !!eventLive();
   if (R.bunting.visible) R.flags.forEach((f, k) => { f.rotation.x = Math.sin(now / 400 + k) * 0.35; });
   // the selected building glows

@@ -30,6 +30,8 @@ function initLayers() {
   T.fresh = new Float32Array(N);    // untracked powder in freeride zones (0–1)
   T.groomed = new Uint8Array(N);    // groomed last night
   T.bare = new Uint8Array(N);       // too little snow to ski
+  T.zone = new Uint8Array(N);       // village zone (see ZONES)
+  T.path = new Uint8Array(N);       // village street or path
 }
 
 function newGame(seed, scenarioId) {
@@ -67,7 +69,7 @@ function newGame(seed, scenarioId) {
 
 function freshStats() {
   return { guestsToday: 0, turnedPrice: 0, turnedFull: 0, happySum: 0, happyN: 0, lastDayProfit: 0, bestDay: 0, totalGuests: 0,
-    injuries: 0, breakdowns: 0, leftThoughts: {}, repStart: 40, regularsToday: 0, passVisits: 0, levelUps: 0 };
+    injuries: 0, breakdowns: 0, leftThoughts: {}, repStart: 40, regularsToday: 0, passVisits: 0, levelUps: 0, stayersToday: 0 };
 }
 function emptyCache() { return { value: 0, demand: 0, capacity: 0, diffsOpen: 0, wtp: 0, diffSet: new Set(), pisteOpen: 0 }; }
 
@@ -132,7 +134,7 @@ const Undo = { stack: [], cur: null };
 
 function beginAction(label) { Undo.cur = { label, tiles: new Map(), cost: 0, lifts: [], buildings: [] }; }
 function noteTile(i) {
-  if (Undo.cur && !Undo.cur.tiles.has(i)) Undo.cur.tiles.set(i, { piste: T.piste[i], tree: T.tree[i], cond: T.cond[i], free: T.free[i] });
+  if (Undo.cur && !Undo.cur.tiles.has(i)) Undo.cur.tiles.set(i, { piste: T.piste[i], tree: T.tree[i], cond: T.cond[i], free: T.free[i], zone: T.zone[i], path: T.path[i] });
 }
 function noteCost(c) { if (Undo.cur) Undo.cur.cost += c; }
 function endAction() {
@@ -148,7 +150,7 @@ function undo() {
   if (!a) { Events.emit('toast', { text: 'Nothing to undo', bad: true }); return; }
   for (const id of a.buildings) removeBuilding(id, 1, true);
   for (const id of a.lifts) removeLift(id, 1, true);
-  for (const [i, v] of a.tiles) { T.piste[i] = v.piste; T.tree[i] = v.tree; T.cond[i] = v.cond; T.free[i] = v.free || 0; }
+  for (const [i, v] of a.tiles) { T.piste[i] = v.piste; T.tree[i] = v.tree; T.cond[i] = v.cond; T.free[i] = v.free || 0; T.zone[i] = v.zone || 0; T.path[i] = v.path || 0; }
   if (a.cost) { S.money += a.cost; S.fin.today.construction -= a.cost; }
   Net.dirty = true;
   Events.emit('changed');
@@ -370,14 +372,14 @@ function checkBuilding(type, x, y) {
     if (T.rock[i]) { res.reason = 'Cannot build on rocks'; return res; }
     if (T.occ[i] !== 0) { res.reason = 'Tile occupied'; return res; }
     if (T.piste[i]) { res.reason = 'Cannot build on a piste'; return res; }
-    if (!T.village[i] && T.diff[i] >= 3) { res.reason = 'Too steep'; return res; }
+    if (!isVillageLand(i) && T.diff[i] >= 3) { res.reason = 'Too steep'; return res; }
     if (cx === ENTRANCE.x && cy >= MAP_H - 2) { res.reason = 'Blocks the entrance road'; return res; }
     if (T.tree[i]) trees++;
-    if (T.village[i]) vil++;
+    if (isVillageLand(i)) vil++;
   }
   if (B.where === 'village' && vil !== tiles.length) { res.reason = 'Must be built in the village'; return res; }
   if (B.where === 'mountain' && vil > 0) { res.reason = 'Must be built on the mountain'; return res; }
-  if (vil > 0 && vil !== tiles.length) { res.reason = 'Cannot straddle the village edge'; return res; }
+  if (vil > 0 && vil !== tiles.length && B.where !== 'any') { res.reason = 'Cannot straddle the village edge'; return res; }
   res.cost += trees * TREE_CLEAR_COST;
   if (res.cost > S.money) { res.reason = 'Not enough money'; return res; }
   res.ok = true;
@@ -417,6 +419,9 @@ function demolishBuilding(id) {
 
 function buildingDoor(b) {
   const cx = b.x + Math.floor(b.size / 2);
+  for (const [x, y] of [[cx, b.y + b.size], [b.x - 1, b.y], [b.x + b.size, b.y], [cx, b.y - 1], [b.x - 1, b.y + b.size - 1], [b.x + b.size, b.y + b.size - 1]]) {
+    if (inMap(x, y) && T.path[idx(x, y)] && isWalk(idx(x, y))) return idx(x, y);
+  }
   for (const [x, y] of [[cx, b.y + b.size], [b.x - 1, b.y], [b.x + b.size, b.y], [cx, b.y - 1]]) {
     if (inMap(x, y) && isWalk(idx(x, y))) return idx(x, y);
   }
@@ -490,7 +495,7 @@ function toggleNightSkiing() {
 function isWalk(i) {
   if (T.occ[i] < 0) return true;
   if (T.occ[i] > 0 || T.closed[i]) return false;
-  if (T.village[i] === 1) return true;
+  if (T.village[i] === 1 || T.path[i]) return true;
   if (T.bare[i]) return false;
   return T.piste[i] === 1 || (T.free[i] === 1 && freeOpen());
 }
@@ -546,7 +551,7 @@ function computeField(sources, skill) {
       if (!isWalk(a)) continue;
       const up = H[b] - H[a];
       if (up > UPHILL_TOL) continue;
-      let cost = c * (T.village[a] ? 1.3 : 1);
+      let cost = c * (T.path[a] ? 0.9 : T.village[a] ? 1.5 : 1);
       if (up > 0) cost += 2;
       const df = tileDiff(b);
       if (df > skill) cost += (df - skill) * 14;
@@ -653,11 +658,10 @@ function recalcValue() {
   v += countB('hotel') * 5;
   if (S.night.on) v += 8;
   v += Math.min(10, freerideTiles() / 12);
-  v += Math.min(6, countB('shop') * 2);
+  v += Math.min(6, countB('shop') * 2) + Math.min(6, (countB('apres') + countB('bistro')) * 2) + Math.min(6, countB('square') * 4);
   S.cache.value = v;
-  const beds = villageBeds();
-  S.cache.beds = beds;
-  S.cache.capacity = 80 + countB('parking') * 100 + countB('hotel') * 60 + beds;
+  S.cache.beds = villageBeds();
+  S.cache.capacity = 80 + countB('parking') * 100 + countB('hotel') * 60 + garageSpaces();
   const w = WEATHER[S.weather.type];
   const fresh = S.weather.fresh >= 15;
   let mk = 1;
@@ -665,7 +669,7 @@ function recalcValue() {
   const E = eventLive();
   if (E) mk += E.demand;
   S.cache.marketing = mk;
-  S.cache.demand = (20 + v * 3.5) * (0.35 + S.reputation / 55) * w.mult * (fresh ? 1.25 : 1) * (1 + 0.15 * countB('hotel') + beds / 500) * mk
+  S.cache.demand = (20 + v * 3.5) * (0.35 + S.reputation / 55) * w.mult * (fresh ? 1.25 : 1) * (1 + 0.15 * countB('hotel')) * mk
     + passHolders() * 0.3 * w.mult;
   S.cache.wtp = 16 + v * 0.5 + S.reputation * 0.25;
 }
@@ -684,8 +688,25 @@ function setGuestTile(g, i) {
   g.tile = i; g.x = tx(i) + 0.5 + g.ox; g.y = ty(i) + 0.5 + g.oy; g.next = -1;
 }
 
+function makeGuest(kind, skill) {
+  return {
+    id: S.nextId++, kind,
+    name: FIRST_NAMES[Math.floor(rand() * FIRST_NAMES.length)] + ' ' + String.fromCharCode(65 + Math.floor(rand() * 26)) + '.',
+    color: JACKET_COLORS[Math.floor(rand() * JACKET_COLORS.length)],
+    skill, happy: 65 + rand() * 15, energy: 70 + rand() * 30, hunger: rand() * 30,
+    cash: 30 + Math.floor(rand() * 120), spent: 0,
+    thoughts: [], liftUses: {}, runs: 0, state: 'decide', dest: null, next: -1,
+    ox: (rand() - 0.5) * 0.5, oy: (rand() - 0.5) * 0.5, lane: rand() * 2 - 1,
+    runStartH: 0, runMaxDiff: 0, runQ: 0, runN: 0, leaving: false, timer: 0, bld: 0, queueTime: 0,
+    arrived: S.minute, lesson: false, wx: 0, wy: 0, parkVisits: 0,
+    xp: 0, reg: 0, runFree: 0, runFresh: 0, runMog: 0, runThin: 0, runGroomed: 0, stayId: 0,
+  };
+}
+
 function spawnGuest() {
-  if (S.guests.length >= S.cache.capacity) { S.stats.turnedFull++; return; }
+  let day = 0;
+  for (const g of S.guests) if (!g.stayId) day++;
+  if (day >= S.cache.capacity) { S.stats.turnedFull++; return; }
   const camps = activeCampaigns();
   const E = eventLive() || {};
   const kidShare = 0.18 + camps.reduce((a, c) => a + (c.kids || 0), 0) + (E.kids || 0);
@@ -705,29 +726,13 @@ function spawnGuest() {
     skill = r < 0.25 ? 0 : r < 0.6 ? 1 : r < 0.85 ? 2 : 3;
     if (rand() < expertBoost) skill = Math.max(skill, rand() < 0.5 ? 3 : 2);
   }
-  const g = {
-    id: S.nextId++, kind,
-    name: FIRST_NAMES[Math.floor(rand() * FIRST_NAMES.length)] + ' ' + String.fromCharCode(65 + Math.floor(rand() * 26)) + '.',
-    color: JACKET_COLORS[Math.floor(rand() * JACKET_COLORS.length)],
-    skill, happy: 65 + rand() * 15, energy: 70 + rand() * 30, hunger: rand() * 30,
-    cash: 30 + Math.floor(rand() * 120), spent: 0,
-    thoughts: [], liftUses: {}, runs: 0, state: 'decide', dest: null, next: -1,
-    ox: (rand() - 0.5) * 0.5, oy: (rand() - 0.5) * 0.5, lane: rand() * 2 - 1,
-    runStartH: 0, runMaxDiff: 0, runQ: 0, runN: 0, leaving: false, timer: 0, bld: 0, queueTime: 0,
-    arrived: S.minute, lesson: false, wx: 0, wy: 0, parkVisits: 0,
-    xp: 0, reg: 0, runFree: 0, runFresh: 0, runMog: 0, runThin: 0, runGroomed: 0,
-  };
+  const g = makeGuest(kind, skill);
+
   if (reg) {
     Object.assign(g, { name: reg.name, color: reg.color, xp: reg.xp || 0, reg: reg.id });
     S.stats.regularsToday++;
     if (reg.pass) { S.stats.passVisits++; g.happy += 3; think(g, 'pass'); }
     else if (rand() < 0.5) { g.happy += 3; think(g, 'regular'); }
-  }
-  const beds = S.cache.beds || 0;
-  if (beds && rand() < beds / (S.cache.capacity || 1)) {
-    g.stay = true; g.cash += 40;
-    if (rand() < luxBeds() / beds) { g.cash *= 2; g.lux = true; }
-    if (rand() < 0.35) { g.happy += 3; think(g, 'chalet'); }
   }
   if (isNightSession()) { g.energy = 55 + rand() * 30; g.hunger = 40 + rand() * 30; }
   setGuestTile(g, idx(ENTRANCE.x, ENTRANCE.y));
@@ -777,8 +782,13 @@ function decide(g) {
     g.leaving = true;
   }
   if (atVillage && !g.leaving && S.minute < OPEN_TIME) { g.state = 'wait'; return; }
+  if (atVillage && g.leaving && g.stayId && stayEvening(g)) return;
   if (atVillage) {
     if (g.leaving) { goVillageWalk(g, idx(ENTRANCE.x, ENTRANCE.y), 'exit'); return; }
+    if (g.cash > 60 && !g.shopped && rand() < 0.04) {
+      const shops = S.buildings.filter(b => b.type === 'shop' && b.occupancy < capOf(b));
+      if (shops.length) { const b = shops[Math.floor(rand() * shops.length)]; g.shopped = true; g.bld = b.id; goVillageWalk(g, buildingDoor(b), 'enter'); return; }
+    }
     if (g.hunger > 60) {
       const food = S.buildings.filter(b => BUILDING_TYPES[b.type].kind === 'food' && T.village[idx(b.x, b.y)]
         && b.occupancy < BUILDING_TYPES[b.type].capacity);
@@ -933,7 +943,7 @@ function enterTile(g, i) {
 
 function enterBuilding(g, b) {
   const B = BUILDING_TYPES[b.type];
-  g.state = 'inside'; g.timer = B.duration * (0.8 + rand() * 0.4); g.bld = b.id;
+  g.state = 'inside'; g.timer = (B.duration || 10) * (0.8 + rand() * 0.4); g.bld = b.id;
   b.occupancy++;
 }
 
@@ -943,7 +953,8 @@ function exitBuilding(g) {
   if (!b) { g.state = g.dest ? 'walk' : 'decide'; return; }
   b.occupancy = Math.max(0, b.occupancy - 1);
   const B = BUILDING_TYPES[b.type];
-  if (B.kind === 'food') {
+  if (B.kind === 'shop' || B.kind === 'evening') payVenue(g, b);
+  else if (B.kind === 'food') {
     const p = Math.round(S.prices.food * B.priceMult);
     if (g.cash >= p) {
       g.cash -= p; g.spent += p; earn('food', p); b.income += p; b.visits++;
@@ -974,19 +985,7 @@ function updateGuest(g, dt) {
   switch (g.state) {
     case 'decide': decide(g); break;
     case 'walk': stepWalk(g, dt); break;
-    case 'stroll': {
-      const dx = g.wx - g.x, dy = g.wy - g.y, d = Math.hypot(dx, dy), v = 1.8 * dt;
-      if (d <= v) {
-        g.x = g.wx; g.y = g.wy;
-        g.tile = idx(clamp(Math.floor(g.x), 0, MAP_W - 1), clamp(Math.floor(g.y), 0, MAP_H - 1));
-        if (g.then === 'exit') leaveResort(g);
-        else if (g.then === 'enter') {
-          const b = S.buildings.find(x => x.id === g.bld);
-          if (b) enterBuilding(g, b); else g.state = 'decide';
-        }
-      } else { g.x += dx / d * v; g.y += dy / d * v; }
-      break;
-    }
+    case 'stroll': stepStroll(g, dt); break;
     case 'queue': {
       g.queueTime += dt;
       const l = S.lifts.find(x => x.id === g.lift);
@@ -1167,6 +1166,7 @@ function simulate(dt) {
   const prevHour = Math.floor(S.minute / 60);
   S.minute += dt;
   spawnTick(dt);
+  stayTick(dt);
   if (S.avy.at > 0 && S.minute >= S.avy.at) freerideAvalanche();
   for (const l of S.lifts) updateLift(l, dt);
   const gs = S.guests.slice();
@@ -1176,7 +1176,10 @@ function simulate(dt) {
 }
 
 function endDay() {
-  for (const g of S.guests.slice()) leaveResort(g);
+  for (const g of S.guests.slice()) {
+    const st = g.stayId && findStay(g.stayId);
+    if (st && st.nights > 1) goHome(g); else leaveResort(g);
+  }
   for (const l of S.lifts) { l.queue = []; l.riders = []; l.ridesToday = 0; l.age++; l.broken = false; l.repair = 0; }
   for (const b of S.buildings) b.occupancy = 0;
   checkGoals();
@@ -1205,6 +1208,9 @@ function endDay() {
   for (const c of S.campaigns) { if (c.delay) c.delay--; else c.daysLeft--; }
   S.campaigns = S.campaigns.filter(c => c.daysLeft > 0);
   nightVillage({ guests: S.stats.guestsToday });
+  nightStays();
+  S.village.lastLease = leaseIncome();
+  if (S.village.lastLease) earn('lease', S.village.lastLease);
   // Weather, snow, grooming, traffic
   T.closed.fill(0);
   rollWeather();
@@ -1230,7 +1236,7 @@ function endDay() {
 
   S.fin.today = emptyFin();
   Object.assign(S.stats, { guestsToday: 0, turnedPrice: 0, turnedFull: 0, happySum: 0, happyN: 0, injuries: 0, breakdowns: 0, leftThoughts: {}, repStart: S.reputation,
-    regularsToday: 0, passVisits: 0, levelUps: 0 });
+    regularsToday: 0, passVisits: 0, levelUps: 0, stayersToday: 0 });
   S.minute = DAY_START; S.spawnAcc = 0;
   S.day++;
   let seasonEnd = false;
@@ -1358,6 +1364,7 @@ function saveGame(auto) {
   try {
     const data = {
       v: 1, seed: S.seed, tree: packBits(T.tree), piste: packBits(T.piste), free: packBits(T.free),
+      path: packBits(T.path), zone: Array.from(T.zone).join(''),
       snow: Array.from(T.snow, v => Math.round(v)), fresh: Array.from(T.fresh, v => Math.round(v * 100)),
       cond: Array.from(T.cond, v => Math.round(v)), groomed: packBits(T.groomed),
       S: {
@@ -1389,7 +1396,7 @@ function loadGame() {
   initLayers();
   const N = MAP_W * MAP_H;
   // Saves from before the village grew have fewer rows; the extra rows are empty village.
-  for (const k of ['tree', 'piste', 'free', 'groomed']) if (typeof data[k] === 'string') data[k] = data[k].padEnd(N, '0');
+  for (const k of ['tree', 'piste', 'free', 'groomed', 'path', 'zone']) if (typeof data[k] === 'string') data[k] = data[k].padEnd(N, '0');
   for (const [k, v] of [['snow', 0], ['fresh', 100], ['cond', 100]]) if (data[k]) while (data[k].length < N) data[k].push(v);
   for (let i = 0; i < N; i++) { T.tree[i] = data.tree[i] === '1' ? 1 : 0; T.piste[i] = data.piste[i] === '1' ? 1 : 0; }
   S = data.S;
@@ -1411,6 +1418,7 @@ function loadGame() {
       T.snow[i] = data.snow[i]; T.fresh[i] = data.fresh[i] / 100; T.cond[i] = data.cond[i];
       T.free[i] = data.free[i] === '1' ? 1 : 0; T.groomed[i] = data.groomed[i] === '1' ? 1 : 0;
     }
+    if (data.path) for (let i = 0; i < N; i++) { T.path[i] = data.path[i] === '1' ? 1 : 0; T.zone[i] = +data.zone[i] || 0; }
     updateBare();
   } else initSnow();
   for (const l of S.lifts) {

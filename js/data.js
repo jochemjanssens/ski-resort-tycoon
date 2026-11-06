@@ -100,26 +100,45 @@ const BUILDING_TYPES = {
     duration: 10, where: 'mountain', color: '#e8590c',
     desc: 'Jumps, rails and a halfpipe. Snowboarders and good skiers stop here. Place next to a piste.',
   },
-  // Built by private developers as the village grows (not in the build menu).
-  chalet: {
-    name: 'Chalet', icon: '🏡', size: 1, cost: 0, upkeep: 0, kind: 'private', beds: 8, buyout: 6000,
-    where: 'village', color: '#9c6b3c', private: true, minRep: 30,
-    desc: 'A private holiday chalet. Its guests ski with you and it pays you a lease every night.',
+  square: {
+    name: 'Village Square', icon: '⛲', size: 2, cost: 8000, upkeep: 80, kind: 'square', where: 'village', color: '#9aa3ad',
+    desc: 'A paved square with a clock tower and the ticket office. Makes nearby plots worth more and gives the village a heart.',
   },
-  shop: {
-    name: 'Sports Shop', icon: '🛍️', size: 1, cost: 0, upkeep: 0, kind: 'private', beds: 0, shopLease: 14, buyout: 8000,
-    where: 'village', color: '#3d7ea6', private: true, minRep: 40,
-    desc: 'A privately run sports shop. It makes the village more attractive and pays a lease.',
+  // Built by private developers on land you zone (not in the build menu). Levels: busy, valuable plots upgrade.
+  chalet: {
+    name: 'Chalet', icon: '🏡', size: 1, cost: 0, upkeep: 0, kind: 'lodging', zone: 1, beds: 6, buyout: 6000,
+    where: 'village', color: '#8b5a2b', private: true, minRep: 25, levels: ['Chalet', 'Guesthouse', 'Chalet Hotel'],
+    desc: 'A private holiday chalet. Its guests stay for several days and it pays you a lease for every occupied bed.',
   },
   apartments: {
-    name: 'Apartments', icon: '🏢', size: 2, cost: 0, upkeep: 0, kind: 'private', beds: 36, buyout: 30000,
-    where: 'village', color: '#6d5f8a', private: true, minRep: 50, minGuests: 120,
+    name: 'Apartments', icon: '🏢', size: 2, cost: 0, upkeep: 0, kind: 'lodging', zone: 1, beds: 26, buyout: 30000,
+    where: 'village', color: '#7a6248', private: true, minRep: 45, minGuests: 100, levels: ['Apartments', 'Residence', 'Grand Residence'],
     desc: 'A private apartment block. Lots of beds close to the lifts.',
   },
   lodge: {
-    name: 'Boutique Lodge', icon: '🛎️', size: 2, cost: 0, upkeep: 0, kind: 'private', beds: 22, lux: true, buyout: 45000,
-    where: 'village', color: '#8a3b2e', private: true, minRep: 68, minGuests: 200,
+    name: 'Boutique Lodge', icon: '🛎️', size: 2, cost: 0, upkeep: 0, kind: 'lodging', zone: 1, beds: 16, lux: true, buyout: 45000,
+    where: 'village', color: '#6b3a2a', private: true, minRep: 65, minGuests: 180, levels: ['Boutique Lodge', 'Mountain Lodge', 'Luxury Spa Lodge'],
     desc: 'A luxury lodge. Wealthy guests who happily pay more for everything.',
+  },
+  shop: {
+    name: 'Sports Shop', icon: '🛍️', size: 1, cost: 0, upkeep: 0, kind: 'shop', zone: 2, shopLease: 12, capacity: 6, duration: 12, spend: 20,
+    buyout: 8000, where: 'village', color: '#3d7ea6', private: true, minRep: 30, levels: ['Sports Shop', 'Ski Boutique', 'Flagship Store'],
+    desc: 'A privately run sports shop. Guests browse it during the day and in the evening; you get a cut of its sales.',
+  },
+  apres: {
+    name: 'Après-ski Hut', icon: '🍻', size: 1, cost: 0, upkeep: 0, kind: 'evening', zone: 2, shopLease: 8, capacity: 22, duration: 35, spend: 18,
+    buyout: 7000, where: 'village', color: '#9c4f2a', private: true, minRep: 25, levels: ['Après-ski Hut', 'Après-ski Bar', 'Après Club'],
+    desc: 'Music, mulled wine and a sunny terrace. Overnight guests come here after the lifts close.',
+  },
+  bistro: {
+    name: 'Bistro', icon: '🍷', size: 1, cost: 0, upkeep: 0, kind: 'evening', zone: 2, shopLease: 10, capacity: 16, duration: 45, spend: 32,
+    buyout: 9000, where: 'village', color: '#7d2e3a', private: true, minRep: 40, levels: ['Bistro', 'Brasserie', 'Fine Dining'],
+    desc: 'Evening dining for guests staying in the village.',
+  },
+  garage: {
+    name: 'Car Park', icon: '🅿️', size: 2, cost: 0, upkeep: 0, kind: 'garage', zone: 3, spaces: 90, shopLease: 8, buyout: 12000,
+    where: 'village', color: '#7b8088', private: true, minRep: 0, levels: ['Private Car Park', 'Parking Deck', 'Parking Garage'],
+    desc: 'A private car park. More day visitors can come; the operator pays you a lease.',
   },
 };
 
@@ -143,7 +162,19 @@ const SKILL_XP = [10, 40, 100];
 const REGULARS_MAX = 400;
 const PASS = { sellUntil: 12, defaultPrice: 420 };
 
-// Private village growth. Lease is what developers pay you per bed per night.
+// Zones the player paints in the village (and on gentle land around it); developers only build inside them.
+const ZONES = {
+  1: { key: 'lodging', name: 'Lodging', icon: '🛏️', color: '#4caf50', types: ['chalet', 'apartments', 'lodge'] },
+  2: { key: 'shops', name: 'Shops & dining', icon: '🛍️', color: '#2f8fd8', types: ['shop', 'apres', 'bistro'] },
+  3: { key: 'parking', name: 'Parking', icon: '🅿️', color: '#8a929e', types: ['garage'] },
+};
+const ZONE_COST = 6;
+const PATH_COST = 10;
+const LEVEL_MULT = [0, 1, 1.6, 2.3];   // beds, capacity and lease per building level
+const HAMLET_RANGE = 4;                // zoning allowed this close to a lift station on the mountain
+const VILLAGE_SPREAD = 8;              // and this many rows up the gentle slope above the village
+
+// Private village growth. Lease is what developers pay you per occupied bed per night.
 const VILLAGE_LEASE = {
   low: { name: 'Low', perBed: 7, growth: 1.7 },
   normal: { name: 'Normal', perBed: 12, growth: 1 },
@@ -244,7 +275,7 @@ const RESEARCH = [
   { id: 'gondola', name: 'Gondola', unlock: 'lift:gondola', points: 50000, requires: 'chair4' },
 ];
 const RESEARCH_FUNDING = [0, 200, 500, 1000, 2500, 5000, 10000]; // dollars (= points) per day
-const START_UNLOCKED = ['lift:rope', 'building:cafe', 'building:rental', 'building:parking'];
+const START_UNLOCKED = ['lift:rope', 'building:cafe', 'building:rental', 'building:parking', 'building:square'];
 
 const PISTE_COST = 20;
 const TREE_CLEAR_COST = 30;
@@ -296,6 +327,14 @@ const THOUGHTS = {
   event: { text: 'What an event — great atmosphere!', good: true },
   avy_caught: { text: 'I got caught in an avalanche!', good: false },
   chalet: { text: 'Our chalet is right by the lifts', good: true },
+  skiin: { text: 'Ski-in, ski-out from our chalet — perfect!', good: true },
+  long_walk: { text: 'It is a long walk from our room to the lifts', good: false },
+  apres: { text: 'Après-ski in the village was great fun!', good: true },
+  dinner: { text: 'Lovely dinner in the village tonight', good: true },
+  shopping: { text: 'Found some great gear in the village shop', good: true },
+  no_evening: { text: "There's nothing to do in the village at night", good: false },
+  village_nice: { text: 'What a charming village', good: true },
+  staying: { text: 'Back on the slopes for another day!', good: true },
 };
 
 const GOALS = [

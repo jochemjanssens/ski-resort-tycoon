@@ -12,7 +12,8 @@ function initResort() {
   S.regulars = [];
   S.passesSold = 0;
   S.event = null; S.eventLast = {}; S.eventWins = {}; S.eventLog = [];
-  S.village = { lease: 'normal', full: false, lastLease: 0 };
+  S.village = { lease: 'normal', status: {}, lastLease: 0 };
+  S.stays = []; S.stayQueue = []; S.stayQueueN = 0;
   initSnow();
 }
 
@@ -23,9 +24,11 @@ function fillResortDefaults() {
     avy: { level: 1, prev: 0, at: -1, blasted: false },
     snowStats: { made: 0, cost: 0, groomed: 0, ungroomed: 0, tooWarm: false },
     regulars: [], passesSold: 0, event: null, eventLast: {}, eventWins: {}, eventLog: [],
-    village: { lease: 'normal', full: false, lastLease: 0 } };
+    village: { lease: 'normal', status: {}, lastLease: 0 }, stays: [], stayQueue: [], stayQueueN: 0 };
   for (const [k, v] of Object.entries(d)) if (S[k] == null) S[k] = v;
   if (S.prices.pass == null) S.prices.pass = PASS.defaultPrice;
+  if (!S.village.status) S.village.status = {};
+  for (const b of S.buildings) if (BUILDING_TYPES[b.type].private && !b.level) b.level = 1;
 }
 
 function initSnow() {
@@ -358,115 +361,6 @@ function eventNight(avgHappy) {
   S.event = null;
 }
 
-// ---------- the private village ----------
-
-function privateBuildings() { return S.buildings.filter(b => BUILDING_TYPES[b.type].private); }
-function villageBeds() { return privateBuildings().reduce((a, b) => a + BUILDING_TYPES[b.type].beds, 0); }
-function luxBeds() { return privateBuildings().reduce((a, b) => a + (BUILDING_TYPES[b.type].lux ? BUILDING_TYPES[b.type].beds : 0), 0); }
-
-function leaseIncome() {
-  const L = VILLAGE_LEASE[S.village.lease];
-  const occ = clamp(0.25 + S.reputation / 130, 0.2, 1);
-  let sum = 0;
-  for (const b of privateBuildings()) {
-    const B = BUILDING_TYPES[b.type];
-    sum += B.beds * L.perBed * occ * (B.lux ? 1.6 : 1) + (B.shopLease || 0) * L.perBed;
-  }
-  return Math.round(sum);
-}
-
-function growthChance(guests) {
-  const L = VILLAGE_LEASE[S.village.lease];
-  const ratio = guests / Math.max(40, S.cache.capacity);
-  // Developers only invest in a resort that is busy, well liked and has real terrain and facilities.
-  const appeal = clamp((S.cache.value - 18) / 35, 0, 1);
-  const pressure = clamp((S.reputation - 28) / 50, 0, 1.2) * clamp(ratio * 1.4 + (S.stats.turnedFull > 0 ? 0.3 : 0), 0, 1.5) * appeal;
-  return clamp(pressure * 0.3 * L.growth, 0, 0.9);
-}
-
-function nightVillage(summary) {
-  const lease = leaseIncome();
-  S.village.lastLease = lease;
-  if (lease) earn('lease', lease);
-  if (rand() < growthChance(summary.guests)) developPrivate(summary.guests);
-}
-
-function liftsReachable() {
-  const e = idx(ENTRANCE.x, ENTRANCE.y), out = new Set();
-  for (const l of S.lifts) { const f = fieldFor('L' + l.id, 3); if (f && isFinite(f.dist[e])) out.add(l.id); }
-  return out;
-}
-
-function findVillageSpot(size, blocked) {
-  const lifts = S.lifts.map(l => [l.bx, l.by]);
-  const spots = [];
-  for (let y = VILLAGE_Y; y <= MAP_H - 2 - size; y++) {
-    for (let x = 1; x < MAP_W - size; x++) {
-      if (blocked.has(idx(x, y))) continue;
-      if (x + size > ENTRANCE.x - 2 && x < ENTRANCE.x + 3) continue;
-      let ok = true;
-      for (let yy = y - 1; yy <= y + size && ok; yy++) for (let xx = x - 1; xx <= x + size && ok; xx++) {
-        if (!inMap(xx, yy)) continue;
-        const i = idx(xx, yy), inside = xx >= x && yy >= y && xx < x + size && yy < y + size;
-        if (T.occ[i] < 0) ok = false; // keep lift stations clear
-        else if (inside && (T.occ[i] !== 0 || T.piste[i] || T.rock[i] || !T.village[i])) ok = false;
-      }
-      if (!ok) continue;
-      let near = 99;
-      for (const [lx, ly] of lifts) near = Math.min(near, Math.hypot(lx - x, ly - y));
-      let neigh = 0;
-      for (const b of S.buildings) if (Math.abs(b.x - x) <= 3 && Math.abs(b.y - y) <= 3) neigh++;
-      spots.push({ x, y, score: Math.min(near, 30) - neigh * 1.5 + rand() * 6 });
-    }
-  }
-  spots.sort((a, b) => a.score - b.score);
-  return spots.slice(0, 3);
-}
-
-function developPrivate(guests) {
-  const types = Object.entries(BUILDING_TYPES).filter(([, B]) => B.private && S.reputation >= B.minRep && guests >= (B.minGuests || 0));
-  if (!types.length) return null;
-  const weights = { chalet: 4, shop: countB('shop') < countB('chalet') / 3 + 1 ? 2 : 0.3, apartments: 2, lodge: 1 };
-  let tot = 0;
-  for (const [k] of types) tot += weights[k];
-  let r = rand() * tot, type = types[0][0];
-  for (const [k] of types) { r -= weights[k]; if (r <= 0) { type = k; break; } }
-  const B = BUILDING_TYPES[type];
-  const before = liftsReachable();
-  const blocked = new Set();
-  for (let tries = 0; tries < 3; tries++) {
-    const spot = findVillageSpot(B.size, blocked)[0];
-    if (!spot) break;
-    const b = { id: S.nextId++, type, x: spot.x, y: spot.y, size: B.size, occupancy: 0, visits: 0, income: 0, cost: 0, built: absDay() };
-    for (const [cx, cy] of buildingTiles(b.x, b.y, b.size)) { const i = idx(cx, cy); T.occ[i] = b.id; T.tree[i] = 0; }
-    S.buildings.push(b);
-    rebuildNetwork();
-    const after = liftsReachable();
-    if ([...before].every(id => after.has(id))) {
-      S.village.full = false;
-      Events.emit('toast', { text: `${B.icon} A developer built ${/^[AEIOU]/.test(B.name) ? 'an' : 'a'} ${B.name} in the village${B.beds ? ` (+${B.beds} beds)` : ''}.` });
-      return b;
-    }
-    for (const [cx, cy] of buildingTiles(b.x, b.y, b.size)) T.occ[idx(cx, cy)] = 0;
-    S.buildings = S.buildings.filter(x => x !== b);
-    blocked.add(idx(spot.x, spot.y));
-  }
-  rebuildNetwork();
-  S.village.full = true;
-  return null;
-}
-
-function buyOutPrivate(id) {
-  const b = S.buildings.find(x => x.id === id);
-  if (!b) return false;
-  const B = BUILDING_TYPES[b.type];
-  if (B.buyout > S.money) { Events.emit('toast', { text: 'Not enough money to buy it out!', bad: true }); return false; }
-  spend('construction', B.buyout);
-  removeBuilding(b.id, 0, true);
-  Events.emit('toast', { text: `${B.name} bought out and demolished for ${fmt$(B.buyout)}` });
-  return true;
-}
-
 function resortAdvice() {
   const rep = snowReport();
   if (rep.n && rep.bare > rep.n * 0.15) {
@@ -479,7 +373,7 @@ function resortAdvice() {
     advise('avy', 'Avalanche danger is high and nobody is blasting the freeride slopes. Turn on avalanche control or close the zones in the Snow panel.');
   }
   if (freerideTiles() && staffCoverage('patrol') < 1) advise('patrol_free', 'Your freeride zones need more ski patrol. Hire patrollers in the Staff panel.');
-  if (S.village.full && S.stats.turnedFull > 20) advise('village_full', 'Developers want to build in the village, but there is no room left. Keep village space free of your own buildings.');
+  villageAdvice();
   const ev = S.event;
   if (ev && !ev.live && ev.start - absDay() === 1 && S.minute > 12 * 60) {
     const missing = eventReqs(ev.id).filter(r => !r.ok);

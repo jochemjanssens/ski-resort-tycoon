@@ -32,7 +32,8 @@ A step-by-step tutorial is offered when you start a new resort (and can be repla
 - **Snow** ❄️: every tile has its own snow depth. Snow falls more up high, melts faster low down and late in the season, and busy pistes get scraped thin. Pistes under 8 cm close. **Snow cannons** top pistes up overnight (Off / Top up to a target / Full power, paid per cm). Each **Groomer Garage** snowcat grooms the busiest 260 tiles a night, and you can leave black runs ungroomed for moguls.
 - **Freeride zones** 🏔️: mark ungroomed off-piste slopes and forest. Advanced and expert skiers seek out untracked powder, which gets tracked out through the day and refills with fresh snow. Fresh snow raises the avalanche danger (1–5): blast the slopes, hire enough ski patrol, or close the zones, or risk a slide.
 - **Events** 🚩: book a ski race, torchlight parade, food festival, big-air contest, Freeride Tour stop or a two-day World Cup weekend. Each has requirements and a few days of preparation, brings crowds, and pays off in rating and sponsorship if guests leave happy.
-- **Village** 🏘️: once the resort is busy, liked and well developed, private developers build chalets, sports shops, apartments and boutique lodges. They add beds and pay you a lease every night; set the lease rate to trade growth against income, or buy a building out.
+- **Village** 🏘️: with the Village tool (Z) you draw streets and zone land for Lodging, Shops & dining and Parking. Private developers build chalets, apartments, lodges, shops, après-ski bars, bistros and car parks on zoned plots that face a street. Plots near lifts and pistes (ski-in, ski-out), near the ⛲ Village Square or with a view are worth more (see the 💎 Plot value view); busy buildings on good plots upgrade up to three levels. The village can spread up gentle slopes or grow a hamlet around a lift station.
+- **Overnight guests**: lodging guests stay 2–5 days. They walk out of their chalet each morning, go for après-ski, dinner or shopping after the lifts close, and only count towards your rating when they check out. You earn a lease for every occupied bed and a cut of village sales.
 - **Staff** 👷: mechanics (breakdowns and repairs), ski patrol (injuries and avalanche control after big snowfalls), instructors (ski school capacity).
 - **Facilities**: cafés, restaurants, terrain park, ski rental, ski school, car parks, hotels, snow cannons, groomer garage.
 - **Marketing** 📣: ad campaigns, family weeks, a snowboard festival, and night skiing with floodlights (after research).
@@ -54,7 +55,7 @@ The game saves automatically every night to `localStorage`. You can also save an
 | Home | Reset the camera |
 | Space, 1–4 | Pause, game speed |
 | Ctrl/⌘+Z or ↩️ | Undo last build |
-| Q / P / R / F / L / B / X | Inspect / Piste / Route / Freeride / Lifts / Build / Demolish |
+| Q / P / R / F / Z / L / B / X | Inspect / Piste / Route / Freeride / Village / Lifts / Build / Demolish |
 | G, V | Slope view, cycle map views |
 | Esc | Cancel |
 
@@ -63,7 +64,8 @@ The game saves automatically every night to `localStorage`. You can also save an
 - `js/data.js`: constants, lift/building catalogues, staff, campaigns, scenarios, research, goals
 - `js/terrain.js`: procedural mountain generator
 - `js/sim.js`: simulation (pathfinding, guest AI, lifts, staff, economy, undo, save/load)
-- `js/resort.js`: snow and grooming, freeride zones and avalanches, regulars and season passes, events, village growth
+- `js/resort.js`: snow and grooming, freeride zones and avalanches, regulars and season passes, events
+- `js/village.js`: zoning, streets, plot values, developers and upgrades, overnight stays and evenings
 - `js/render.js`: three.js rendering (terrain, trees, lifts, buildings, guests, lighting), camera and picking, map-view overlay, mini-map
 - `js/ui.js`: input (mouse and touch), tools, panels, tutorial
 - `js/main.js`: boot and main loop
