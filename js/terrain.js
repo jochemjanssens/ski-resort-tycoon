@@ -110,7 +110,13 @@ function generateTerrain(seed, opts) {
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
-      if (village[i]) { grade[i] = 0; diff[i] = 0; continue; }
+      if (village[i]) {
+        // the valley floor is forested too, apart from the road; the village is cleared as it is built
+        grade[i] = 0; diff[i] = 0;
+        const density = fbm(x * 0.13 + 200, y * 0.13 + 200, 3);
+        if (Math.abs(x - EX) > 2 && (density > 0.5 || (density > 0.45 && rng() < 0.35))) tree[i] = 1;
+        continue;
+      }
       const gx = (hAt(x + 1, y) - hAt(x - 1, y)) / 2;
       const gy = (hAt(x, y + 1) - hAt(x, y - 1)) / 2;
       const g = Math.sqrt(gx * gx + gy * gy) / TILE_M;

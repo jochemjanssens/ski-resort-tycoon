@@ -168,6 +168,12 @@ const ZONES = {
   2: { key: 'shops', name: 'Shops & dining', icon: '🛍️', color: '#2f8fd8', types: ['shop', 'apres', 'bistro'] },
   3: { key: 'parking', name: 'Parking', icon: '🅿️', color: '#8a929e', types: ['garage'] },
 };
+// Land: the map is split into parcels; the resort starts with a few and buys neighbouring ones.
+const PARCEL = 8;
+const PARCELS_X = Math.ceil(MAP_W / PARCEL);
+const PARCELS_Y = Math.floor(MAP_H / PARCEL);   // the bottom row of parcels takes the leftover rows
+const LAND = { base: 1500, perTile: 25, alt: 600, growth: 0.05 };
+
 const ZONE_COST = 6;
 const PATH_COST = 10;
 const LEVEL_MULT = [0, 1, 1.6, 2.3];   // beds, capacity and lease per building level

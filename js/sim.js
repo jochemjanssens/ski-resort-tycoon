@@ -33,6 +33,7 @@ function initLayers() {
   T.zone = new Uint8Array(N);       // village zone (see ZONES)
   T.path = new Uint8Array(N);       // village street or path
   for (let i = 0; i < N; i++) if (T.road[i]) T.path[i] = 1; // the access road is a street too
+  T.owned = new Uint8Array(N).fill(1);
 }
 
 function newGame(seed, scenarioId) {
@@ -63,6 +64,7 @@ function newGame(seed, scenarioId) {
   initResort();
   Undo.stack = [];
   placeStarter();
+  initLand();
   Net.dirty = true;
   rebuildNetwork();
   Events.emit('newgame');
@@ -76,10 +78,10 @@ function emptyCache() { return { value: 0, demand: 0, capacity: 0, diffsOpen: 0,
 
 function emptyFin() {
   return { tickets: 0, passes: 0, food: 0, rental: 0, school: 0, hotel: 0, lease: 0, events: 0, rewards: 0,
-    construction: 0, upkeep: 0, snow: 0, staff: 0, marketing: 0, research: 0, interest: 0 };
+    construction: 0, land: 0, upkeep: 0, snow: 0, staff: 0, marketing: 0, research: 0, interest: 0 };
 }
 const INCOME_KEYS = ['tickets', 'passes', 'food', 'rental', 'school', 'hotel', 'lease', 'events', 'rewards'];
-const EXPENSE_KEYS = ['construction', 'upkeep', 'snow', 'staff', 'marketing', 'research', 'interest'];
+const EXPENSE_KEYS = ['construction', 'land', 'upkeep', 'snow', 'staff', 'marketing', 'research', 'interest'];
 
 function earn(cat, amt) { S.money += amt; S.fin.today[cat] = (S.fin.today[cat] || 0) + amt; }
 function spend(cat, amt) { S.money -= amt; S.fin.today[cat] = (S.fin.today[cat] || 0) + amt; }
@@ -162,7 +164,7 @@ function undo() {
 // ---------- construction ----------
 
 function canPiste(i) {
-  return !T.village[i] && !T.rock[i] && T.diff[i] < 4 && T.occ[i] <= 0;
+  return !T.village[i] && !T.rock[i] && T.diff[i] < 4 && T.occ[i] <= 0 && T.owned[i] === 1;
 }
 
 function paintPiste(tiles) {
@@ -185,7 +187,7 @@ function removePiste(tiles) {
 }
 
 function clearTrees(tiles) {
-  const todo = tiles.filter(i => T.tree[i]);
+  const todo = tiles.filter(i => T.tree[i] && T.owned[i]);
   const cost = todo.length * TREE_CLEAR_COST;
   if (!todo.length) return 0;
   if (cost > S.money) { Events.emit('toast', { text: 'Not enough money!', bad: true }); return 0; }
@@ -196,7 +198,7 @@ function clearTrees(tiles) {
 }
 
 function plantTrees(tiles) {
-  const todo = tiles.filter(i => !T.tree[i] && !T.rock[i] && !T.piste[i] && !T.village[i] && T.occ[i] === 0);
+  const todo = tiles.filter(i => !T.tree[i] && !T.rock[i] && !T.piste[i] && T.owned[i] && T.occ[i] === 0 && !T.path[i] && !T.zone[i]);
   const cost = todo.length * 15;
   if (!todo.length || cost > S.money) return 0;
   todo.forEach(i => { noteTile(i); T.tree[i] = 1; });
@@ -211,7 +213,7 @@ function planRoute(a, b, maxDiff) {
   const res = { ok: false, path: [], reason: '', maxD: 0, len: 0 };
   if (a < 0 || b < 0 || a === b) { res.reason = 'Pick two different points'; return res; }
   if (H[b] > H[a] + UPHILL_TOL) { res.reason = 'The end must be lower than the start'; return res; }
-  const passable = i => i === a || i === b || T.village[i] || T.occ[i] < 0 || canPiste(i) || T.piste[i];
+  const passable = i => i === a || i === b || (T.village[i] && T.owned[i]) || T.occ[i] < 0 || canPiste(i) || T.piste[i];
   if (!passable(a) || !passable(b)) { res.reason = 'Start or end is blocked'; return res; }
   const dist = new Float64Array(N).fill(Infinity), prev = new Int32Array(N).fill(-1);
   const heap = new Heap();
@@ -259,6 +261,7 @@ function checkLift(type, bx, by, tx2, ty2) {
   res.vert = Math.round(T.height[ti] - T.height[bi]);
   let trees = 0;
   for (const i of [bi, ti]) {
+    if (!T.owned[i]) { res.reason = NOT_OWNED; return res; }
     if (T.rock[i]) { res.reason = 'Station on rocks'; return res; }
     if (T.occ[i] !== 0) { res.reason = 'Station tile occupied'; return res; }
     if (T.tree[i]) trees++;
@@ -272,6 +275,7 @@ function checkLift(type, bx, by, tx2, ty2) {
   for (let k = 1; k < steps; k++) {
     const x = Math.floor(bx + 0.5 + (tx2 - bx) * k / steps), y = Math.floor(by + 0.5 + (ty2 - by) * k / steps);
     if (T.occ[idx(x, y)] > 0) { res.reason = 'Line crosses a building'; return res; }
+    if (!T.owned[idx(x, y)]) { res.reason = 'The lift line leaves your land'; return res; }
   }
   if (res.cost > S.money) { res.reason = 'Not enough money'; return res; }
   res.ok = true;
@@ -371,6 +375,7 @@ function checkBuilding(type, x, y) {
   for (const [cx, cy] of tiles) {
     if (!inMap(cx, cy)) { res.reason = 'Out of bounds'; return res; }
     const i = idx(cx, cy);
+    if (!T.owned[i]) { res.reason = NOT_OWNED; return res; }
     if (T.rock[i]) { res.reason = 'Cannot build on rocks'; return res; }
     if (T.occ[i] !== 0) { res.reason = 'Tile occupied'; return res; }
     if (T.piste[i]) { res.reason = 'Cannot build on a piste'; return res; }
@@ -497,7 +502,7 @@ function toggleNightSkiing() {
 function isWalk(i) {
   if (T.occ[i] < 0) return true;
   if (T.occ[i] > 0 || T.closed[i]) return false;
-  if (T.village[i] === 1 || T.path[i]) return true;
+  if ((T.village[i] === 1 && T.owned[i]) || T.path[i]) return true;
   if (T.bare[i]) return false;
   return T.piste[i] === 1 || (T.free[i] === 1 && freeOpen());
 }
@@ -1407,6 +1412,7 @@ function loadGame() {
   S.staff = S.staff || { mechanic: 1, patrol: 1, instructor: 2 };
   S.campaigns = (S.campaigns || []).filter(c => CAMPAIGNS[c.id]);
   fillResortDefaults();
+  fillLandDefaults();
   S.night = S.night || { installed: false, on: false };
   S.advice = S.advice || {}; S.adviceLog = S.adviceLog || [];
   S.stats = { ...freshStats(), ...S.stats, leftThoughts: S.stats.leftThoughts || {} };

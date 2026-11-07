@@ -25,8 +25,8 @@ function expandable(i) {
   return T.vdist[i] <= VILLAGE_SPREAD || nearStation(i, HAMLET_RANGE);
 }
 function isVillageLand(i) { return T.village[i] === 1 || T.zone[i] > 0; }
-function canZone(i) { return T.occ[i] === 0 && !T.piste[i] && !T.road[i] && expandable(i); }
-function canPath(i) { return T.occ[i] === 0 && !T.piste[i] && !T.rock[i] && !T.road[i] && (T.village[i] || T.diff[i] <= 1); }
+function canZone(i) { return T.occ[i] === 0 && !T.piste[i] && !T.road[i] && T.owned[i] === 1 && expandable(i); }
+function canPath(i) { return T.occ[i] === 0 && !T.piste[i] && !T.rock[i] && !T.road[i] && T.owned[i] === 1 && (T.village[i] || T.diff[i] <= 1); }
 
 // mode: 'path', 1–3 (a zone), or 'remove'
 function paintVillage(tiles, mode) {
@@ -42,14 +42,13 @@ function paintVillage(tiles, mode) {
     cost = todo.length * PATH_COST + todo.filter(i => T.tree[i]).length * TREE_CLEAR_COST;
   } else {
     todo = tiles.filter(i => canZone(i) && T.zone[i] !== mode);
-    cost = todo.filter(i => !T.zone[i]).length * ZONE_COST + todo.filter(i => T.tree[i]).length * TREE_CLEAR_COST;
+    cost = todo.filter(i => !T.zone[i]).length * ZONE_COST;
   }
   if (!todo.length) return 0;
   if (cost > S.money) { Events.emit('toast', { text: 'Not enough money!', bad: true }); return 0; }
   for (const i of todo) {
     noteTile(i);
-    T.tree[i] = 0;
-    if (mode === 'path') T.path[i] = 1; else T.zone[i] = mode;
+    if (mode === 'path') { T.tree[i] = 0; T.path[i] = 1; } else T.zone[i] = mode;
   }
   spend('construction', cost); noteCost(cost);
   Net.dirty = true;
@@ -123,7 +122,7 @@ function buildingSkiIn(b) { return plotGrid().dl[idx(b.x, b.y)] <= 3 || plotGrid
 // ---------- walking through the village along streets ----------
 
 const VF = { version: -1, cache: new Map() };
-function townWalk(i) { return (T.village[i] || T.path[i]) && T.occ[i] <= 0; }
+function townWalk(i) { return ((T.village[i] && T.owned[i]) || T.path[i]) && T.occ[i] <= 0; }
 
 // Shortest walk to a target over village tiles, strongly preferring streets.
 function villageField(target) {

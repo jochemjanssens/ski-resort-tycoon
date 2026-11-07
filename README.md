@@ -25,6 +25,7 @@ A step-by-step tutorial is offered when you start a new resort (and can be repla
 
 ## How it works
 
+- **Land** 🚩: you start with a small patch of the mountain around the bunny lift and the end of the access road. Buy neighbouring 8×8 parcels with the Land tool (K); higher land costs more and each parcel makes the next one dearer. Pistes, lifts, buildings and streets need land you own.
 - **Pistes**: paint them with ⛷️, or use 🛣️ **Route**: click a high point and a lower point and the game paints the gentlest line downhill, aiming for the difficulty you pick. A piste's colour comes from the slope.
 - **Lifts**: click a bottom station, then a top station. A piste must lead away from the top. Lifts age and break down; refurbish them, or upgrade them in place to a better lift type.
 - **Guests**: skiers, kids and snowboarders of four skill levels. They buy a pass if it's worth the price, pick lifts that suit them, spread out over the piste width, get hungry and tired, and sometimes crash.
@@ -32,7 +33,7 @@ A step-by-step tutorial is offered when you start a new resort (and can be repla
 - **Snow** ❄️: every tile has its own snow depth. Snow falls more up high, melts faster low down and late in the season, and busy pistes get scraped thin. Pistes under 8 cm close. **Snow cannons** top pistes up overnight (Off / Top up to a target / Full power, paid per cm). Each **Groomer Garage** snowcat grooms the busiest 260 tiles a night, and you can leave black runs ungroomed for moguls.
 - **Freeride zones** 🏔️: mark ungroomed off-piste slopes and forest. Advanced and expert skiers seek out untracked powder, which gets tracked out through the day and refills with fresh snow. Fresh snow raises the avalanche danger (1–5): blast the slopes, hire enough ski patrol, or close the zones, or risk a slide.
 - **Events** 🚩: book a ski race, torchlight parade, food festival, big-air contest, Freeride Tour stop or a two-day World Cup weekend. Each has requirements and a few days of preparation, brings crowds, and pays off in rating and sponsorship if guests leave happy.
-- **Village** 🏘️: with the Village tool (Z) you draw streets and zone land for Lodging, Shops & dining and Parking. Private developers build chalets, apartments, lodges, shops, après-ski bars, bistros and car parks on zoned plots that face a street. Plots near lifts and pistes (ski-in, ski-out), near the ⛲ Village Square or with a view are worth more (see the 💎 Plot value view); busy buildings on good plots upgrade up to three levels. The village sits on an irregular valley floor reached by a single access road; it can spread up gentle slopes or grow a hamlet around a lift station.
+- **Village** 🏘️: with the Village tool (Z) you draw streets and zone land for Lodging, Shops & dining and Parking. Private developers build chalets, apartments, lodges, shops, après-ski bars, bistros and car parks on zoned plots that face a street. Plots near lifts and pistes (ski-in, ski-out), near the ⛲ Village Square or with a view are worth more (see the 💎 Plot value view); busy buildings on good plots upgrade up to three levels. The village sits on a forested, irregular valley floor reached by a single access road and is cleared as it is built; it can spread up gentle slopes or grow a hamlet around a lift station.
 - **Overnight guests**: lodging guests stay 2–5 days. They walk out of their chalet each morning, go for après-ski, dinner or shopping after the lifts close, and only count towards your rating when they check out. You earn a lease for every occupied bed and a cut of village sales.
 - **Staff** 👷: mechanics (breakdowns and repairs), ski patrol (injuries and avalanche control after big snowfalls), instructors (ski school capacity).
 - **Facilities**: cafés, restaurants, terrain park, ski rental, ski school, car parks, hotels, snow cannons, groomer garage.
@@ -55,7 +56,7 @@ The game saves automatically every night to `localStorage`. You can also save an
 | Home | Reset the camera |
 | Space, 1–4 | Pause, game speed |
 | Ctrl/⌘+Z or ↩️ | Undo last build |
-| Q / P / R / F / Z / L / B / X | Inspect / Piste / Route / Freeride / Village / Lifts / Build / Demolish |
+| Q / P / R / F / Z / K / L / B / X | Inspect / Piste / Route / Freeride / Village / Land / Lifts / Build / Demolish |
 | G, V | Slope view, cycle map views |
 | Esc | Cancel |
 
@@ -65,6 +66,7 @@ The game saves automatically every night to `localStorage`. You can also save an
 - `js/terrain.js`: procedural mountain generator
 - `js/sim.js`: simulation (pathfinding, guest AI, lifts, staff, economy, undo, save/load)
 - `js/resort.js`: snow and grooming, freeride zones and avalanches, regulars and season passes, events
+- `js/land.js`: land parcels, prices and purchases
 - `js/village.js`: zoning, streets, plot values, developers and upgrades, overnight stays and evenings
 - `js/render.js`: three.js rendering (terrain, trees, lifts, buildings, guests, lighting), camera and picking, map-view overlay, mini-map
 - `js/ui.js`: input (mouse and touch), tools, panels, tutorial

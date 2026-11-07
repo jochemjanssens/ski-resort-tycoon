@@ -338,6 +338,19 @@ function paintBase() {
       if (snowEdge(X, Y + 1)) c.fillRect(x, y + Q - 2, Q, 2);
     }
   }
+  // Land you don't own is slightly darker, with a rope along your boundary
+  for (let i = 0; i < MAP_W * MAP_H; i++) {
+    const x = tx(i) * Q, y = ty(i) * Q, X = tx(i), Y = ty(i);
+    if (!T.owned[i]) { c.fillStyle = 'rgba(40,60,100,0.12)'; c.fillRect(x, y, Q, Q); continue; }
+    const out = (nx, ny) => inMap(nx, ny) && !T.owned[idx(nx, ny)];
+    c.fillStyle = 'rgba(217,72,15,0.75)';
+    for (let k = 0; k < Q; k += 6) {
+      if (out(X - 1, Y)) c.fillRect(x, y + k, 1.5, 3.5);
+      if (out(X + 1, Y)) c.fillRect(x + Q - 1.5, y + k, 1.5, 3.5);
+      if (out(X, Y - 1)) c.fillRect(x + k, y, 3.5, 1.5);
+      if (out(X, Y + 1)) c.fillRect(x + k, y + Q - 1.5, 3.5, 1.5);
+    }
+  }
   // The access road, with a turning circle where it ends in the village
   let end = MAP_H;
   for (let i = 0; i < MAP_W * MAP_H; i++) {
@@ -417,7 +430,7 @@ function floodlit() { return S.night.on && S.minute > 16 * 60 + 15 && S.minute <
 function overlayKey() {
   const m = UI.mouse;
   return [UI.tool, m.inside ? m.tile : -1, UI.liftStart, UI.route.start, UI.liftType, UI.buildType, UI.brush, UI.freeMode, UI.route.maxDiff,
-    R.view, Sel.kind, Sel.id, Sel.tile, floodlit(), Net.version].join('|');
+    R.view, Sel.kind, Sel.id, Sel.tile, floodlit(), Net.version, UI.tool === 'land' ? Math.floor(S.money / 250) : 0].join('|');
 }
 
 function redrawOverlay(now) {
@@ -432,6 +445,20 @@ function redrawOverlay(now) {
   else if (R.view === 'condition' || R.view === 'snow' || R.view === 'traffic' || R.view === 'value') {
     if (now - R.viewAt > 800 || R.viewFor !== R.view) paintViewLayer();
     c.drawImage(R.viewLayer, 0, 0);
+  }
+  if (UI.tool === 'land') {
+    for (let p = 0; p < S.parcels.length; p++) {
+      if (S.parcels[p]) continue;
+      const ok = buyable(p);
+      c.fillStyle = ok ? (parcelPrice(p) <= S.money ? 'rgba(76,175,80,0.3)' : 'rgba(255,170,60,0.28)') : 'rgba(30,40,60,0.28)';
+      for (const i of parcelTiles(p)) c.fillRect(tx(i) * OPX, ty(i) * OPX, OPX, OPX);
+    }
+    const m = UI.mouse;
+    if (m.inside && m.tile >= 0) {
+      const t = parcelTiles(parcelOf(m.tile)), a = t[0], b = t[t.length - 1];
+      c.strokeStyle = '#fff'; c.lineWidth = 2;
+      c.strokeRect(tx(a) * OPX + 1, ty(a) * OPX + 1, (tx(b) - tx(a) + 1) * OPX - 2, (ty(b) - ty(a) + 1) * OPX - 2);
+    }
   }
   if (UI.tool === 'village' || R.view === 'value') {
     for (let i = 0; i < MAP_W * MAP_H; i++) {
@@ -796,11 +823,11 @@ function buildSquare(g, add, std, ghostMat) {
   return 2.4;
 }
 
-// Street lamps along paths and a few spruces between buildings; rebuilt when streets, zones or buildings change.
+// Street lamps along paths and fence posts along your land boundary; rebuilt when streets, buildings or land change.
 function syncVillageDecor() {
   let sig = 0;
   for (let i = 0; i < T.path.length; i++) if (T.path[i] || T.zone[i]) sig = (sig * 31 + i * 7 + T.path[i] * 3 + T.zone[i]) | 0;
-  sig += ':' + S.buildings.length;
+  sig += ':' + S.buildings.length + ':' + S.parcels.join('');
   if (sig === R.decorSig) return;
   R.decorSig = sig;
   const MAX = 1200;
@@ -817,10 +844,10 @@ function syncVillageDecor() {
     x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
     R.glow = new THREE.Points(new THREE.BufferGeometry(), new THREE.PointsMaterial({ map: new THREE.CanvasTexture(gl), size: 1.6, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
     R.glow.frustumCulled = false;
-    const spruce = new THREE.ConeGeometry(0.22, 0.8, 7); spruce.translate(0, 0.45, 0);
-    R.spruces = new THREE.InstancedMesh(spruce, new THREE.MeshStandardMaterial({ color: 0x2f5d45, roughness: 0.9 }), MAX);
-    R.spruces.castShadow = true;
-    R.scene.add(R.lamps, R.lampHeads, R.glow, R.spruces);
+    const post = new THREE.CylinderGeometry(0.03, 0.035, 0.5, 5); post.translate(0, 0.25, 0);
+    R.posts = new THREE.InstancedMesh(post, new THREE.MeshStandardMaterial({ color: 0xd9480f, roughness: 0.7 }), 4000);
+    R.posts.castShadow = true;
+    R.scene.add(R.lamps, R.lampHeads, R.glow, R.posts);
     R.smoke = [];
   }
   const m4 = new THREE.Matrix4(), glow = [];
@@ -834,15 +861,17 @@ function syncVillageDecor() {
   R.lamps.count = R.lampHeads.count = n;
   R.lamps.instanceMatrix.needsUpdate = R.lampHeads.instanceMatrix.needsUpdate = true;
   R.glow.geometry.setAttribute('position', new THREE.Float32BufferAttribute(glow, 3));
-  for (let i = 0; i < T.village.length && t < MAX; i++) {
-    if (!T.village[i] || T.path[i] || T.occ[i] || T.zone[i] || ty(i) >= MAP_H - 2 || hash(i, 11) > 0.12) continue;
-    const X = tx(i), Y = ty(i);
-    if (Math.abs(X - ENTRANCE.x) < 2) continue;
-    const x = X + 0.3 + hash(i, 12) * 0.4, y = Y + 0.3 + hash(i, 13) * 0.4, sc = 0.8 + hash(i, 14) * 0.5;
-    m4.makeScale(sc, sc, sc).setPosition(x, elev(x, y), y);
-    R.spruces.setMatrixAt(t++, m4);
+  // a post every other tile along each edge between owned and unowned land
+  for (let i = 0; i < T.owned.length && t < 4000; i++) {
+    if (!T.owned[i]) continue;
+    const X = tx(i), Y = ty(i), out = (nx, ny) => inMap(nx, ny) && !T.owned[idx(nx, ny)];
+    for (const [dx, dy, px, py] of [[-1, 0, 0, 0.5], [1, 0, 1, 0.5], [0, -1, 0.5, 0], [0, 1, 0.5, 1]]) {
+      if (!out(X + dx, Y + dy) || (X + Y) % 2) continue;
+      const x = X + px, y = Y + py;
+      m4.makeTranslation(x, elev(x, y), y); R.posts.setMatrixAt(t++, m4);
+    }
   }
-  R.spruces.count = t; R.spruces.instanceMatrix.needsUpdate = true;
+  R.posts.count = t; R.posts.instanceMatrix.needsUpdate = true;
 }
 
 const smokeTex = (() => {
@@ -1044,6 +1073,11 @@ function drawLabels() {
     if (l.broken && blink) { const m = cableAt(v.path, 0.5); label('🔧 Broken', m.setY(m.y + 0.8), '#ff8577', undefined, 20); }
     else if (!l.usable && blink) label('⚠️ No way down', top.clone().setY(top.y + 0.9), '#ffd43b', undefined, 20);
     else if (!l.open) label('CLOSED', bot.clone().setY(bot.y + 1.6), '#ff8577', undefined, 17);
+  }
+  if (UI.tool === 'land') for (let p = 0; p < S.parcels.length; p++) {
+    if (!buyable(p)) continue;
+    const [x, y] = parcelCenter(p), pr = parcelPrice(p);
+    label(fmt$(pr), new THREE.Vector3(x, elev(x, y) + 1.2, y), pr <= S.money ? '#7ee08a' : '#ffb86b', undefined, 18);
   }
   const E = eventLive();
   if (E) label(`${E.icon} ${E.name.toUpperCase()}`, new THREE.Vector3(ENTRANCE.x + 0.5, 3.2, MAP_H - 5), '#fff', 'rgba(18,28,43,0.9)', 24);
@@ -1298,6 +1332,12 @@ function drawMinimap(cv) {
   }
   ctx.drawImage(R.miniShade, 0, 0, W, H);
   if (R.view !== 'none' && R.view !== 'queues') ctx.drawImage(R.view === 'slope' ? R.slopeLayer : R.viewLayer, 0, 0, W, H);
+  ctx.fillStyle = 'rgba(18,28,43,0.45)';
+  for (let p = 0; p < S.parcels.length; p++) {
+    if (S.parcels[p]) continue;
+    const t = parcelTiles(p), a = t[0], b = t[t.length - 1];
+    ctx.fillRect(tx(a) * sx, ty(a) * sy, (tx(b) - tx(a) + 1) * sx, (ty(b) - ty(a) + 1) * sy);
+  }
   for (const b of S.buildings) { ctx.fillStyle = BUILDING_TYPES[b.type].color; ctx.fillRect(b.x * sx, b.y * sy, b.size * sx, b.size * sy); }
   ctx.lineWidth = 1.5;
   for (const l of S.lifts) {

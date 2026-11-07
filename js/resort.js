@@ -136,7 +136,7 @@ function nightSnow() {
 
 // ---------- freeride zones and avalanches ----------
 
-function canFree(i) { return !T.village[i] && !T.rock[i] && T.diff[i] < 4 && T.occ[i] === 0 && !T.piste[i]; }
+function canFree(i) { return !T.village[i] && !T.rock[i] && T.diff[i] < 4 && T.occ[i] === 0 && !T.piste[i] && T.owned[i] === 1; }
 function freeOpen() { return S.freeride.open && !S.freeride.closedToday; }
 function freerideTiles() { let n = 0; for (let i = 0; i < T.free.length; i++) n += T.free[i]; return n; }
 

@@ -122,6 +122,12 @@ function renderSubmenu() {
       <div class="hint" style="margin:6px 4px">Width</div>
       <div class="brush">${[1, 2, 3].map(n => `<button class="${UI.brush === n ? 'on' : ''}" data-action="brush" data-id="${n}">${n} tile${n > 1 ? 's' : ''}</button>`).join('')}</div>
       <p class="hint">Click a high point, then a lower point (a lift station or the village). The piste follows the gentlest line downhill. Right-click to cancel.</p>`;
+  } else if (UI.tool === 'land') {
+    const n = ownedParcels(), cheapest = S.parcels.map((v, p) => buyable(p) ? parcelPrice(p) : Infinity).reduce((a, b) => Math.min(a, b), Infinity);
+    h += `<h3>Land</h3>
+      <div class="tiles"><div class="tile"><span class="l">You own</span><span class="v">${n} / ${S.parcels.length}</span><span class="s">parcels of ${PARCEL}×${PARCEL} tiles</span></div>
+      <div class="tile"><span class="l">Cheapest</span><span class="v">${isFinite(cheapest) ? money(cheapest) : '—'}</span><span class="s">parcel for sale</span></div></div>
+      <p class="hint">Click a green parcel next to your land to buy it. You can only build pistes, lifts, buildings and streets on land you own. Higher land costs more, and every parcel you buy makes the next one a little dearer.</p>`;
   } else if (UI.tool === 'village') {
     const modes = [['path', '🛤️', 'Street', `${money(PATH_COST)}/tile`], ...Object.entries(ZONES).map(([z, Z]) => [z, Z.icon, `${Z.name} zone`, `${money(ZONE_COST)}/tile`]), ['remove', '✖️', 'Remove', 'free']];
     h += `<h3>Village</h3>
@@ -283,6 +289,12 @@ function onDown(e) {
     beginAction({ piste: 'Paint piste', unpiste: 'Remove piste', clear: 'Clear trees', plant: 'Plant trees', freeride: 'Freeride zone', village: 'Village' }[UI.tool]);
     UI.drag = { kind: 'paint', last: m.tile };
     applyBrush(m.tile, m.tile);
+  } else if (UI.tool === 'land') {
+    if (m.tile < 0) return;
+    const p = parcelOf(m.tile);
+    if (!S.parcels[p] && !canBuyParcel(p) && confirm(`Buy this parcel of land for ${money(parcelPrice(p))}?`)) buyParcel(p);
+    else if (!S.parcels[p] && canBuyParcel(p)) toast(canBuyParcel(p), true);
+    renderSubmenu();
   } else if (UI.tool === 'route') {
     if (m.tile < 0) return;
     if (UI.route.start == null) { UI.route.start = m.tile; UI.route.key = ''; return; }
@@ -389,6 +401,7 @@ function onKey(e) {
   else if (k === 'x') selectTool('demolish');
   else if (k === 'f') selectTool('freeride');
   else if (k === 'z') selectTool('village');
+  else if (k === 'k') selectTool('land');
   else if (k === 'home') { resetCamera(); UI.camMoved = true; }
   else if (k === '+' || k === '=') zoomAt(innerWidth / 2, innerHeight / 2, 1.2);
   else if (k === '-') zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.2);
@@ -459,16 +472,23 @@ function updateTooltip() {
     if (!c.ok) h += `<br><span class="bad">${c.reason}</span>`;
   } else if (UI.tool === 'piste') {
     if (T.village[i]) h = 'Village (no piste needed)';
+    else if (!T.owned[i]) h = `<span class="bad">${NOT_OWNED}</span>`;
     else if (!canPiste(i)) h = `<span class="bad">${T.rock[i] || T.diff[i] >= 4 ? 'Too steep / rocky' : 'Occupied'}</span>`;
     else h = `<span style="color:${DIFFS[T.diff[i]].color === '#111111' ? '#ccc' : DIFFS[T.diff[i]].color}">●</span> ${DIFFS[T.diff[i]].name} · ${Math.round(T.grade[i] * 100)}% · ${money(PISTE_COST + (T.tree[i] ? TREE_CLEAR_COST : 0))}`;
+  } else if (UI.tool === 'land') {
+    const p = parcelOf(i), why = canBuyParcel(p);
+    h = S.parcels[p] ? 'Your land' : why && why !== 'Not enough money' ? `<span class="bad">${why}</span>`
+      : `Buy this parcel · <b>${money(parcelPrice(p))}</b>${why ? `<br><span class="bad">${why}</span>` : '<br>Click to buy'}`;
   } else if (UI.tool === 'village') {
     const mode = UI.villageMode, v = isVillageLand(i) || expandable(i) ? ` · plot value <b>${plotValue(i).toFixed(2)}</b>` : '';
-    if (mode === 'remove') h = T.zone[i] || T.path[i] ? 'Remove zone / street' : '';
+    if (!T.owned[i]) h = `<span class="bad">${NOT_OWNED}</span>`;
+    else if (mode === 'remove') h = T.zone[i] || T.path[i] ? 'Remove zone / street' : '';
     else if (mode === 'path') h = canPath(i) ? `Street · ${money(PATH_COST)}${v}` : `<span class="bad">${T.piste[i] ? 'A piste is here' : T.occ[i] ? 'Occupied' : 'Too steep / rocky'}</span>`;
     else h = canZone(i) ? `${ZONES[mode].name} zone${v}` : `<span class="bad">${T.occ[i] ? 'Occupied' : T.piste[i] ? 'A piste is here' : 'Too steep, or too far from the village and lift stations'}</span>`;
   } else if (UI.tool === 'freeride') {
     if (UI.freeMode === 'remove') h = T.free[i] ? 'Remove from freeride zone' : '';
     else if (T.free[i]) h = 'Already in a freeride zone';
+    else if (!T.owned[i]) h = `<span class="bad">${NOT_OWNED}</span>`;
     else if (!canFree(i)) h = `<span class="bad">${T.village[i] ? 'Not in the village' : T.piste[i] ? 'Already a piste' : T.rock[i] || T.diff[i] >= 4 ? 'Too steep / rocky' : 'Occupied'}</span>`;
     else h = `Off-piste · ${Math.round(T.grade[i] * 100)}%${T.tree[i] ? ' · tree skiing' : ''} · ${money(FREERIDE.cost)}`;
   } else if (UI.tool === 'inspect' || UI.tool === 'demolish') {
@@ -719,7 +739,7 @@ function renderPanel(full) {
 
 const FIN_LABELS = { tickets: 'Lift tickets', passes: 'Season passes', food: 'Food & drink', rental: 'Ski rental', school: 'Ski school', hotel: 'Hotel rooms',
   lease: 'Village leases', events: 'Event sponsors', rewards: 'Goal rewards',
-  construction: 'Construction', upkeep: 'Running costs', snow: 'Snow, grooming & avalanche control', staff: 'Staff wages', marketing: 'Marketing & events', research: 'Research', interest: 'Loan interest' };
+  construction: 'Construction', land: 'Land purchases', upkeep: 'Running costs', snow: 'Snow, grooming & avalanche control', staff: 'Staff wages', marketing: 'Marketing & events', research: 'Research', interest: 'Loan interest' };
 
 function finTable(f) {
   let inc = 0, exp = 0, h = '<table class="kv">';
@@ -946,7 +966,7 @@ function panelMenu() {
       Drag (Inspect tool), middle-drag or two fingers: pan · Right-drag or Shift+drag: rotate and tilt · Wheel / pinch: zoom<br>
       WASD: pan · , and .: rotate · Page Up/Down: tilt · Home: reset the camera<br>
       Space: pause · 1–4: speed · Ctrl/⌘+Z: undo · G: slope view · V: cycle views · Esc: cancel<br>
-      Q inspect · P piste · R route · F freeride · Z village · L lifts · B build · X demolish</div>
+      Q inspect · P piste · R route · F freeride · Z village · K land · L lifts · B build · X demolish</div>
     <h4>How it works</h4>
     <div class="hint" style="margin:0;line-height:1.6">Guests arrive at the car park, buy a lift pass, ride lifts and ski <b>downhill</b> along pistes to the next lift or back to the village. Each piste tile's colour comes from the slope. Beginners and kids need green runs, experts want red and black, snowboarders love terrain parks and hate drag lifts. Keep queues short, hire staff, feed hungry guests, and grow your rating to attract more visitors.</div>`;
 }
