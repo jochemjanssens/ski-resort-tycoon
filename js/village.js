@@ -22,18 +22,18 @@ function nearStation(i, r) {
 function expandable(i) {
   if (T.village[i]) return true;
   if (T.rock[i] || T.piste[i] || T.free[i] || T.diff[i] > 1) return false;
-  return ty(i) >= VILLAGE_Y - VILLAGE_SPREAD || nearStation(i, HAMLET_RANGE);
+  return T.vdist[i] <= VILLAGE_SPREAD || nearStation(i, HAMLET_RANGE);
 }
 function isVillageLand(i) { return T.village[i] === 1 || T.zone[i] > 0; }
-function canZone(i) { return T.occ[i] === 0 && !T.piste[i] && expandable(i); }
-function canPath(i) { return T.occ[i] === 0 && !T.piste[i] && !T.rock[i] && (T.village[i] || T.diff[i] <= 1) && !(tx(i) === ENTRANCE.x && ty(i) >= MAP_H - 2); }
+function canZone(i) { return T.occ[i] === 0 && !T.piste[i] && !T.road[i] && expandable(i); }
+function canPath(i) { return T.occ[i] === 0 && !T.piste[i] && !T.rock[i] && !T.road[i] && (T.village[i] || T.diff[i] <= 1); }
 
 // mode: 'path', 1–3 (a zone), or 'remove'
 function paintVillage(tiles, mode) {
   let todo, cost = 0;
   if (mode === 'remove') {
     let n = 0;
-    for (const i of tiles) if (T.zone[i] || T.path[i]) { noteTile(i); T.zone[i] = 0; T.path[i] = 0; n++; }
+    for (const i of tiles) if ((T.zone[i] || T.path[i]) && !T.road[i]) { noteTile(i); T.zone[i] = 0; T.path[i] = 0; n++; }
     if (n) Net.dirty = true;
     return n;
   }
@@ -130,7 +130,8 @@ function villageField(target) {
   if (VF.version !== Net.version) { VF.cache.clear(); VF.version = Net.version; }
   let f = VF.cache.get(target);
   if (f) return f;
-  const N = MAP_W * MAP_H, dist = new Float32Array(N).fill(Infinity), next = new Int32Array(N).fill(-1);
+  // Float64: the heap holds doubles, and Float32 rounding would make `d > dist[b]` skip valid entries
+  const N = MAP_W * MAP_H, dist = new Float64Array(N).fill(Infinity), next = new Int32Array(N).fill(-1);
   const heap = new Heap();
   dist[target] = 0; heap.push(target, 0);
   while (heap.size) {

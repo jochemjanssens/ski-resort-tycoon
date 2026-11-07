@@ -61,7 +61,89 @@ function elev(x, y) {
   const v = R.vh, a = v[iy * VW + ix], b = v[iy * VW + ix + 1], c = v[(iy + 1) * VW + ix], d = v[(iy + 1) * VW + ix + 1];
   return (a * (1 - rx) + b * rx) * (1 - ry) + (c * (1 - rx) + d * rx) * ry;
 }
-function groundAt(x, y) { return x < 0 || y < 0 || x > MAP_W || y > MAP_H ? -2.2 : elev(x, y); }
+function groundAt(x, y) { return x < 0 || y < 0 || x > MAP_W || y > MAP_H ? outerHeight(x, y) : elev(x, y); }
+
+// ---------- the land around the map ----------
+
+// The access road leaves the village to the south and winds down the valley.
+function roadX(z) { const k = z - MAP_H; return ENTRANCE.x + 0.5 + Math.sin(k / 11) * Math.min(1, k / 10) * 6; }
+
+// Height beyond the map edge: the valley carries on downhill to the south, flanked by slopes,
+// and the mountains keep rising to the north, east and west. Matches the map exactly at its edge.
+function outerHeight(x, z) {
+  const cx = clamp(x, 0, MAP_W), cz = clamp(z, 0, MAP_H), e = elev(cx, cz);
+  const d = Math.hypot(x - cx, z - cz);
+  if (d === 0 || !R.outNoise) return e;
+  const n = R.outNoise(x * 0.05 + 40, z * 0.05 + 40, 3);
+  let far;
+  if (z > MAP_H) {
+    const dx = Math.abs(x - roadX(z));
+    far = -(z - MAP_H) * 0.12 + Math.max(0, dx - 9) * (0.3 + 0.4 * n) + (n - 0.5) * 1.5;
+  } else far = e + d * (0.3 + 0.5 * n) + (z < 0 ? -z * 0.2 : 0);
+  const t = clamp(d / 14, 0, 1), k = t * t * (3 - 2 * t);
+  return e + (far - e) * k;
+}
+
+function buildOuter() {
+  R.outNoise = makeNoise(T.seed * 3 + 11);
+  const forest = makeNoise(T.seed * 5 + 7);
+  const X0 = -90, X1 = MAP_W + 90, Z0 = -70, Z1 = MAP_H + 100, STEP = 2;
+  const nx = (X1 - X0) / STEP + 1, nz = (Z1 - Z0) / STEP + 1;
+  const pos = new Float32Array(nx * nz * 3), col = new Float32Array(nx * nz * 3), index = [];
+  const hgt = (x, z) => outerHeight(x, z);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) {
+    const x = X0 + i * STEP, z = Z0 + j * STEP, y = hgt(x, z), k = (j * nx + i) * 3;
+    pos[k] = x; pos[k + 1] = y; pos[k + 2] = z;
+    const slope = Math.hypot(hgt(x + 1, z) - hgt(x - 1, z), hgt(x, z + 1) - hgt(x, z - 1)) / 2;
+    const f = forest(x * 0.09, z * 0.09, 3), treeLine = 20 + (f - 0.5) * 8;
+    let r = 0.93, g = 0.95, b = 0.98;
+    if (slope > 1.1) { r = 0.55; g = 0.58; b = 0.63; }
+    else if (f > 0.46 && y < treeLine) { const m = clamp((f - 0.46) * 5, 0, 0.8); r = 0.93 - m * 0.78; g = 0.95 - m * 0.7; b = 0.98 - m * 0.76; }
+    col[k] = r; col[k + 1] = g; col[k + 2] = b;
+  }
+  for (let j = 0; j < nz - 1; j++) for (let i = 0; i < nx - 1; i++) {
+    const x = X0 + i * STEP, z = Z0 + j * STEP;
+    if (x >= 0 && x + STEP <= MAP_W && z >= 0 && z + STEP <= MAP_H) continue; // the map itself
+    const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1;
+    index.push(a, c, b, b, c, d);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.setIndex(index);
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 }));
+  mesh.receiveShadow = true; mesh.castShadow = true;
+  const g = new THREE.Group();
+  g.add(mesh);
+  // The road down the valley
+  const rp = [];
+  for (let z = MAP_H; z <= Z1; z += 0.5) for (const s of [-0.38, 0.38]) { const x = roadX(z) + s; rp.push(x, hgt(x, z) + 0.05, z); }
+  const ri = [];
+  for (let k = 0; k < rp.length / 3 - 2; k += 2) ri.push(k, k + 1, k + 2, k + 1, k + 3, k + 2);
+  const rg = new THREE.BufferGeometry();
+  rg.setAttribute('position', new THREE.Float32BufferAttribute(rp, 3)); rg.setIndex(ri); rg.computeVertexNormals();
+  const road = new THREE.Mesh(rg, new THREE.MeshStandardMaterial({ color: 0x4b515c, roughness: 0.8, side: THREE.DoubleSide }));
+  road.receiveShadow = true;
+  g.add(road);
+  // Forests on the surrounding slopes
+  const trees = [];
+  for (let k = 0; k < 16000 && trees.length < 5000; k++) {
+    const x = X0 + 30 + hash(k, 1) * (X1 - X0 - 60), z = Z0 + 20 + hash(k, 2) * (Z1 - Z0 - 40);
+    if (x > -1 && x < MAP_W + 1 && z > -1 && z < MAP_H + 1) continue;
+    if (z > MAP_H && Math.abs(x - roadX(z)) < 2.5) continue;
+    const y = hgt(x, z), f = forest(x * 0.09, z * 0.09, 3);
+    if (f < 0.48 || y > 20 + (f - 0.5) * 8) continue;
+    trees.push([x, y, z, 0.8 + hash(k, 3) * 0.7]);
+  }
+  const cone = new THREE.ConeGeometry(0.34, 1.3, 6); cone.translate(0, 0.65, 0);
+  const tm = new THREE.InstancedMesh(cone, new THREE.MeshStandardMaterial({ color: 0x2f5444, roughness: 0.9 }), Math.max(1, trees.length));
+  const m4 = new THREE.Matrix4();
+  trees.forEach(([x, y, z, s], k) => { m4.makeScale(s, s, s).setPosition(x, y - 0.05, z); tm.setMatrixAt(k, m4); });
+  tm.count = trees.length; tm.castShadow = true;
+  g.add(tm);
+  return g;
+}
 
 // ---------- setup ----------
 
@@ -93,14 +175,14 @@ function initRender(canvas) {
 
   // Snowfield around the map and distant peaks fading into the haze
   const field = new THREE.Mesh(new THREE.PlaneGeometry(900, 900), new THREE.MeshStandardMaterial({ color: 0xe9eff6, roughness: 1 }));
-  field.rotation.x = -Math.PI / 2; field.position.set(MAP_W / 2, -2.2, MAP_H / 2); field.receiveShadow = true;
+  field.rotation.x = -Math.PI / 2; field.position.set(MAP_W / 2, -14, MAP_H / 2); field.receiveShadow = true;
   scene.add(field);
   const peakMat = new THREE.MeshStandardMaterial({ color: 0xdfe7f1, roughness: 1, flatShading: true });
   for (let k = 0; k < 16; k++) {
     const a = Math.PI * (1.05 + 0.9 * k / 15) + (hash(k, 1) - 0.5) * 0.15, d = 110 + hash(k, 2) * 70;
     const h = 22 + hash(k, 3) * 34, rr = 26 + hash(k, 4) * 22;
     const m = new THREE.Mesh(new THREE.ConeGeometry(rr, h, 6 + Math.floor(hash(k, 5) * 3)), peakMat);
-    m.position.set(MAP_W / 2 + Math.cos(a) * d, h / 2 - 2.2, MAP_H / 2 + Math.sin(a) * d * 0.8);
+    m.position.set(MAP_W / 2 + Math.cos(a) * d, h / 2 - 14, MAP_H / 2 + Math.sin(a) * d * 0.8);
     m.rotation.y = hash(k, 6) * 6;
     scene.add(m);
   }
@@ -149,9 +231,7 @@ function buildTerrainCanvas() {
   const over = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: R.ovTex, transparent: true, depthWrite: false, toneMapped: false,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
   over.renderOrder = 2;
-  const skirt = new THREE.Mesh(new THREE.BoxGeometry(MAP_W, 2.2, MAP_H), new THREE.MeshStandardMaterial({ color: 0x5b6b80, roughness: 1 }));
-  skirt.position.set(MAP_W / 2, -1.12, MAP_H / 2);
-  g.add(terrain, over, skirt, buildArch());
+  g.add(terrain, over, buildOuter(), buildArch());
   paintSlopeLayer();
   R.treeSig = R.liftSig = R.bldSig = null;
   R.ovKey = ''; R.ghostKey = null; R.miniShade = null;
@@ -164,7 +244,7 @@ function paintBase() {
   const c = R.base.getContext('2d'), Q = BPX;
   for (let i = 0; i < MAP_W * MAP_H; i++) {
     const x = tx(i) * Q, y = ty(i) * Q, n = hash(i, 3);
-    if (T.village[i]) c.fillStyle = `rgb(${226 + n * 8},${232 + n * 6},${239 + n * 5})`;
+    if (T.village[i]) c.fillStyle = `rgb(${234 + n * 8},${238 + n * 7},${245 + n * 5})`; // packed snow
     else if (T.rock[i]) c.fillStyle = `rgb(${120 + n * 25},${126 + n * 25},${136 + n * 22})`;
     else c.fillStyle = `rgb(${240 + n * 8},${244 + n * 7},250)`;
     c.fillRect(x, y, Q, Q);
@@ -239,7 +319,7 @@ function paintBase() {
       if (edge(X, Y + 1)) c.fillRect(x + k, y + Q - 2, 2.5, 2);
     }
   }
-  // Zoned land that is still empty, and streets with cobbles
+  // Streets with cobbles (zones only show while you work on the village, see redrawOverlay)
   for (let i = 0; i < MAP_W * MAP_H; i++) {
     const z = T.zone[i];
     if (!z && !T.path[i]) continue;
@@ -256,17 +336,18 @@ function paintBase() {
       if (snowEdge(X + 1, Y)) c.fillRect(x + Q - 2, y, 2, Q);
       if (snowEdge(X, Y - 1)) c.fillRect(x, y, Q, 2);
       if (snowEdge(X, Y + 1)) c.fillRect(x, y + Q - 2, Q, 2);
-    } else if (T.occ[i] === 0) {
-      c.fillStyle = ZONES[z].color; c.globalAlpha = 0.2; c.fillRect(x, y, Q, Q); c.globalAlpha = 0.55;
-      for (let k = 0; k < Q; k += 6) { c.fillRect(x + k, y, 3, 1.5); c.fillRect(x, y + k, 1.5, 3); }
-      c.globalAlpha = 1;
     }
   }
-  // Village edge, road and entrance drive
-  c.fillStyle = 'rgba(120,135,160,0.35)'; c.fillRect(0, VILLAGE_Y * Q, MAP_W * Q, 2);
-  c.fillStyle = '#4b515c'; c.fillRect(0, (MAP_H - 1) * Q + 3, MAP_W * Q, Q - 6);
-  c.fillStyle = '#f5f5f5'; for (let x = 0; x < MAP_W * Q; x += 16) c.fillRect(x, (MAP_H - 0.5) * Q - 1, 8, 2);
-  c.fillStyle = '#4b515c'; c.fillRect(ENTRANCE.x * Q + 3, (MAP_H - 3) * Q, Q - 6, Q * 2.5);
+  // The access road, with a turning circle where it ends in the village
+  let end = MAP_H;
+  for (let i = 0; i < MAP_W * MAP_H; i++) {
+    if (!T.road[i]) continue;
+    const x = tx(i) * Q, y = ty(i) * Q;
+    end = Math.min(end, ty(i));
+    c.fillStyle = '#4b515c'; c.fillRect(x - Q * 0.1, y, Q * 1.2, Q);
+    c.fillStyle = '#f5f5f5'; c.fillRect(x + Q / 2 - 1, y + 3, 2, Q / 2 - 2);
+  }
+  c.fillStyle = '#4b515c'; c.beginPath(); c.arc((ENTRANCE.x + 0.5) * Q, end * Q, Q * 0.9, 0, Math.PI * 2); c.fill();
   R.baseTex.needsUpdate = true;
 }
 
@@ -351,6 +432,15 @@ function redrawOverlay(now) {
   else if (R.view === 'condition' || R.view === 'snow' || R.view === 'traffic' || R.view === 'value') {
     if (now - R.viewAt > 800 || R.viewFor !== R.view) paintViewLayer();
     c.drawImage(R.viewLayer, 0, 0);
+  }
+  if (UI.tool === 'village' || R.view === 'value') {
+    for (let i = 0; i < MAP_W * MAP_H; i++) {
+      const z = T.zone[i];
+      if (!z || T.occ[i] || T.path[i]) continue;
+      const x = tx(i) * OPX, y = ty(i) * OPX;
+      c.fillStyle = ZONES[z].color; c.globalAlpha = 0.28; c.fillRect(x, y, OPX, OPX);
+      c.globalAlpha = 0.7; c.fillRect(x, y, OPX, 1); c.fillRect(x, y, 1, OPX); c.globalAlpha = 1;
+    }
   }
   c.setTransform(OPX / TILE, 0, 0, OPX / TILE, 0, 0);
   R.ghost = null;
@@ -956,7 +1046,7 @@ function drawLabels() {
     else if (!l.open) label('CLOSED', bot.clone().setY(bot.y + 1.6), '#ff8577', undefined, 17);
   }
   const E = eventLive();
-  if (E) label(`${E.icon} ${E.name.toUpperCase()}`, new THREE.Vector3(ENTRANCE.x + 0.5, 3.2, VILLAGE_Y + 2), '#fff', 'rgba(18,28,43,0.9)', 24);
+  if (E) label(`${E.icon} ${E.name.toUpperCase()}`, new THREE.Vector3(ENTRANCE.x + 0.5, 3.2, MAP_H - 5), '#fff', 'rgba(18,28,43,0.9)', 24);
   for (let k = R.labelN; k < R.labelGroup.children.length; k++) R.labelGroup.children[k].visible = false;
 }
 
@@ -975,7 +1065,7 @@ function buildArch() {
 function initExtras() {
   // Event bunting strung across the village
   const g = R.bunting = new THREE.Group(); g.visible = false;
-  const x0 = ENTRANCE.x - 9.5, x1 = ENTRANCE.x + 10.5, z = VILLAGE_Y + 2, top = 1.9;
+  const x0 = ENTRANCE.x - 3, x1 = ENTRANCE.x + 4, z = MAP_H - 5, top = 1.9;
   const wood = new THREE.MeshStandardMaterial({ color: 0x5b3a24 });
   for (const x of [x0, x1]) { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.05, top, 6), wood); p.position.set(x, top / 2, z); p.castShadow = true; g.add(p); }
   const pts = [];
@@ -985,8 +1075,8 @@ function initExtras() {
   flagG.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-0.13, 0, 0, 0.13, 0, 0, 0, -0.3, 0]), 3));
   const cols = [0xff8a3d, 0x5ec2ff, 0x7ee08a, 0xffd43b, 0xff5c8a];
   R.flags = [];
-  for (let k = 0; k < 28; k++) {
-    const t = (k + 0.5) / 28;
+  for (let k = 0; k < 12; k++) {
+    const t = (k + 0.5) / 12;
     const f = new THREE.Mesh(flagG, new THREE.MeshBasicMaterial({ color: cols[k % 5], side: THREE.DoubleSide }));
     f.position.set(x0 + (x1 - x0) * t, top - Math.sin(Math.PI * t) * 0.5, z);
     g.add(f); R.flags.push(f);
@@ -1143,7 +1233,7 @@ function rayGround(sx, sy) {
     }
     prev = t;
     step = Math.min(1.2, step * 1.04);
-    if (y < -5) break;
+    if (y < -20) break;
   }
   return null;
 }

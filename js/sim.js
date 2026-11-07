@@ -32,6 +32,7 @@ function initLayers() {
   T.bare = new Uint8Array(N);       // too little snow to ski
   T.zone = new Uint8Array(N);       // village zone (see ZONES)
   T.path = new Uint8Array(N);       // village street or path
+  for (let i = 0; i < N; i++) if (T.road[i]) T.path[i] = 1; // the access road is a street too
 }
 
 function newGame(seed, scenarioId) {
@@ -90,14 +91,15 @@ function dayEnd() { return closeTime() + 60; }
 function liftsOpen() { return S.minute >= OPEN_TIME && S.minute < closeTime(); }
 function isNightSession() { return S.night.on && S.minute >= CLOSE_TIME; }
 
-// Starter: a rope tow and a green piste near the village.
+// Starter: a rope tow and a green piste running down to the edge of the valley floor.
 function placeStarter() {
-  const cands = [];
+  const top = T.vtop, cands = [];
   for (let x0 = 4; x0 < MAP_W - 8; x0++) {
     if (Math.abs(x0 + 2 - ENTRANCE.x) < 4) continue;
     let worst = 0, bad = false;
-    for (let y = VILLAGE_Y - 11; y < VILLAGE_Y; y++) {
-      for (let x = x0; x < x0 + 4; x++) {
+    for (let x = x0; x < x0 + 4 && !bad; x++) {
+      if (top[x] >= MAP_H - 2 || top[x] < 12) { bad = true; break; }
+      for (let y = top[x] - 11; y < top[x]; y++) {
         const i = idx(x, y);
         if (T.rock[i]) bad = true;
         worst = Math.max(worst, T.diff[i]);
@@ -109,16 +111,16 @@ function placeStarter() {
   if (!cands.length) cands.push({ x0: 10 });
   // Try candidates until the bunny slope actually works (skiable down to the village, enough rise).
   for (let k = 0; k < cands.length; k++) {
-    const x0 = cands[k].x0, saved = [];
-    for (let y = VILLAGE_Y - 11; y < VILLAGE_Y; y++) {
-      for (let x = x0; x < x0 + 4; x++) {
+    const x0 = cands[k].x0, saved = [], lx = x0 + 3, by = Math.min(MAP_H - 2, top[lx]);
+    for (let x = x0; x < x0 + 4; x++) {
+      for (let y = Math.max(0, top[x] - 11); y < Math.min(MAP_H, top[x]); y++) {
         const i = idx(x, y);
         saved.push([i, T.tree[i], T.piste[i]]);
         T.tree[i] = 0;
         if (x < x0 + 3) T.piste[i] = 1;
       }
     }
-    const l = createLift('rope', x0 + 3, VILLAGE_Y, x0 + 3, VILLAGE_Y - 11);
+    const l = createLift('rope', lx, by, lx, Math.max(0, by - 11));
     l.name = 'Bunny Tow';
     rebuildNetwork();
     if ((l.usable && l.vert >= 15) || k === cands.length - 1) return;
@@ -373,7 +375,7 @@ function checkBuilding(type, x, y) {
     if (T.occ[i] !== 0) { res.reason = 'Tile occupied'; return res; }
     if (T.piste[i]) { res.reason = 'Cannot build on a piste'; return res; }
     if (!isVillageLand(i) && T.diff[i] >= 3) { res.reason = 'Too steep'; return res; }
-    if (cx === ENTRANCE.x && cy >= MAP_H - 2) { res.reason = 'Blocks the entrance road'; return res; }
+    if (T.road[i]) { res.reason = 'Blocks the access road'; return res; }
     if (T.tree[i]) trees++;
     if (isVillageLand(i)) vil++;
   }
@@ -1418,7 +1420,7 @@ function loadGame() {
       T.snow[i] = data.snow[i]; T.fresh[i] = data.fresh[i] / 100; T.cond[i] = data.cond[i];
       T.free[i] = data.free[i] === '1' ? 1 : 0; T.groomed[i] = data.groomed[i] === '1' ? 1 : 0;
     }
-    if (data.path) for (let i = 0; i < N; i++) { T.path[i] = data.path[i] === '1' ? 1 : 0; T.zone[i] = +data.zone[i] || 0; }
+    if (data.path) for (let i = 0; i < N; i++) { T.path[i] = data.path[i] === '1' || T.road[i] ? 1 : 0; T.zone[i] = +data.zone[i] || 0; }
     updateBare();
   } else initSnow();
   for (const l of S.lifts) {

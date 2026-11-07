@@ -48,15 +48,39 @@ function generateTerrain(seed, opts) {
   const village = new Uint8Array(N);
   const mountainRows = VILLAGE_Y;
 
+  // The valley floor: an irregular basin whose upper edge wanders, pinched off by slopes on both sides.
+  const EX = ENTRANCE.x;
+  const valleyX = W / 2 + (fbm(3.1, 9.7, 2) - 0.5) * 10;
+  const vtop = new Int16Array(W);
+  for (let x = 0; x < W; x++) {
+    let top = VILLAGE_Y + (fbm(x * 0.07 + 11, 4.2, 3) - 0.5) * 9;
+    const side = Math.abs(x - valleyX) / (W * 0.5);
+    if (side > 0.5) top += (side - 0.5) * 70;
+    if (Math.abs(x - EX) <= 3) top = Math.min(top, H - 6);   // keep the valley open where the road comes in
+    if (x === EX) top = Math.min(top, H - 8);
+    vtop[x] = Math.round(top);
+    for (let y = Math.max(0, vtop[x]); y < H; y++) village[y * W + x] = 1;
+  }
+  // Distance from the valley floor, for blending the slopes into it.
+  const vdist = new Uint8Array(N).fill(255), q = [];
+  for (let i = 0; i < N; i++) if (village[i]) { vdist[i] = 0; q.push(i); }
+  for (let k = 0; k < q.length; k++) {
+    const a = q[k], ax = a % W, ay = (a / W) | 0, nd = vdist[a] + 1;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const x = ax + dx, y = ay + dy;
+      if (x < 0 || y < 0 || x >= W || y >= H) continue;
+      const b = y * W + x;
+      if (vdist[b] > nd) { vdist[b] = nd; q.push(b); }
+    }
+  }
+  const smooth = (a, b, v) => { const t = Math.max(0, Math.min(1, (v - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const floor = (x, y) => BASE_ALT + (H - 1 - y) * 0.9 + (fbm(x * 0.12 + 70, y * 0.12 + 70, 2) - 0.5) * 4;
+
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
       const i = y * W + x;
-      if (y >= VILLAGE_Y) {
-        height[i] = BASE_ALT;
-        village[i] = 1;
-        continue;
-      }
-      const t = (VILLAGE_Y - y) / mountainRows; // 0 at village edge, 1 at top
+      if (village[i]) { height[i] = floor(x, y); continue; }
+      const t = Math.max(0, (VILLAGE_Y - y) / mountainRows); // 0 at the valley, 1 at the top
       // Peaks vary across the width; a gentle foothill band near the village.
       const ridge = 0.55 + 0.45 * fbm(x * 0.045 + 50, 7.3, 3);
       const bumps = (fbm(x * 0.09, y * 0.09, 4) - 0.5);
@@ -64,19 +88,19 @@ function generateTerrain(seed, opts) {
       // Gullies and spurs running down the fall line: ridged noise stretched north–south.
       const rn = fbm(x * 0.05 + 300, y * 0.02 + 300, 2);
       const gully = (1 - Math.abs(rn * 2 - 1)) - 0.55;
-      height[i] = BASE_ALT + opts.vert * ridge * shape + bumps * opts.bumps * Math.min(1, t * 2.5)
+      const main = opts.vert * ridge * shape + bumps * opts.bumps * Math.min(1, t * 2.5)
         + gully * opts.vert * 0.1 * Math.min(1, t * 1.6);
+      // Side slopes rise away from the valley floor wherever the main mountain doesn't.
+      const d = vdist[i];
+      const flank = Math.min(d, 16) * 9 * (0.7 + 0.6 * fbm(x * 0.1 + 5, y * 0.1 + 5, 2));
+      const base = floor(x, y);
+      const h = BASE_ALT + Math.max(main, flank);
+      height[i] = Math.max(base + d * 2, base + (h - base) * smooth(0, 5, d));
     }
   }
-  // Blend the first mountain rows into the flat village.
-  for (let y = VILLAGE_Y - 3; y < VILLAGE_Y; y++) {
-    const k = (VILLAGE_Y - y) / 4;
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      height[i] = BASE_ALT + (height[i] - BASE_ALT) * k;
-      if (height[i] < BASE_ALT + 1) height[i] = BASE_ALT + 1 + (VILLAGE_Y - y);
-    }
-  }
+  // The access road: one road climbs up the valley into the village.
+  const road = new Uint8Array(N);
+  for (let y = H - 1; y >= H - 7; y--) road[y * W + EX] = 1;
 
   const grade = new Float32Array(N);
   const diff = new Int8Array(N);
@@ -97,11 +121,11 @@ function generateTerrain(seed, opts) {
       const h = height[i];
       if (d >= 4 || (h > BASE_ALT + opts.vert * 0.68 && fbm(x * 0.3 + 9, y * 0.3, 2) > 0.6)) rock[i] = 1;
       const treeLine = 1950 + opts.tree + (fbm(x * 0.1, y * 0.1 + 40, 2) - 0.5) * 300;
-      if (!rock[i] && h < treeLine && y < VILLAGE_Y - 1) {
+      if (!rock[i] && h < treeLine && vdist[i] >= 2) {
         const density = fbm(x * 0.13 + 200, y * 0.13 + 200, 3);
         if (density > 0.5 || (density > 0.44 && rng() < 0.4)) tree[i] = 1;
       }
     }
   }
-  return { seed, height, grade, diff, tree, rock, village };
+  return { seed, height, grade, diff, tree, rock, village, vtop, vdist, road, valleyX };
 }
